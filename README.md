@@ -1,5 +1,6 @@
-# unified3d
-Headless 3D Asset Processing Framework
+# Unified3D
+
+> **Headless 3D Asset Processing Framework**  
 > Analyze, compare, transform, rig, animate, validate and convert 3D assets without requiring a DCC, viewport or renderer.
 
 **Status:** Architecture / specification phase  
