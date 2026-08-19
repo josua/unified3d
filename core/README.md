@@ -10,6 +10,13 @@ The first executable slice contains:
 - coordinate-system, bounds, geometry, material, skeleton, skin and animation
   analysis sections;
 - deterministic semantic validation and structured diagnostics.
+- immutable shared byte storage and validated views for positions, indices and
+  four-wide `JOINTS_n` / `WEIGHTS_n` influence sets.
+
+The buffer slice validates scalar types, component counts, offsets, strides,
+storage bounds, vertex-count consistency and influence-set capacity. It is the
+data contract required before implementing spatial skin transfer; it is not yet
+an adapter decoder or a transfer algorithm.
 
 Format-native sections are retained as opaque content-typed byte payloads. This
 preserves arbitrary nested FBX/glTF extension data without forcing a JSON value

@@ -21,7 +21,7 @@ unified3d-runtime
 
 ## 2. Initial transports
 
-### Implemented protocol-development transport
+### Implemented stdio transport
 
 The first executable slice uses newline-delimited JSON-RPC 2.0 over standard
 input/output. Each non-empty line is one complete request. Each response is one
@@ -29,12 +29,18 @@ complete line and is flushed immediately. This transport exists to validate the
 wire contract and client SDKs without coupling the protocol to the final IPC
 implementation.
 
-### Planned production transport on Windows
+### Implemented local transport on Windows
 
 ```text
 Named Pipe
 \\.\pipe\Unified3D.Runtime.v1
 ```
+
+Start it with `unified3d-runtime --pipe` or pass a custom local pipe name as
+the following argument. It uses the same newline framing and dispatcher as
+stdio. Remote clients are rejected. The pipe ACL grants full access to the
+creating owner, administrators and Local System; the initial implementation is
+synchronous and accepts one connected client at a time.
 
 ### Linux / macOS
 
@@ -89,6 +95,8 @@ runtime.hello
 runtime.shutdown
 analysis.validate
 analysis.compare
+asset.load
+asset.release
 ```
 
 The Runtime implements JSON-RPC notifications: a request without `id` executes
@@ -137,11 +145,73 @@ reasons are strings.
 }
 ```
 
+Level 7 normalizes known axes, handedness, unit scale and available geometry
+(or scene) bounds into a right-handed, Y-up, −Z-forward metric frame. This is a
+metadata-level alignment result, not proof of vertex or surface correspondence.
+
+### `asset.load`
+
+Registers an existing `.fbx`, `.glb` or `.gltf` source in the Runtime registry.
+The selected native adapter decodes triangle geometry and optional skin
+influences before the Runtime registers any child resource.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 4,
+  "method": "asset.load",
+  "params": {
+    "path": "C:/assets/character.glb",
+    "backend": "auto"
+  }
+}
+```
+
+The result contains `asset` and `reused`. Loading the same unchanged live file
+increments its retain count and returns the same handle. `asset.primitives`
+contains only lightweight descriptors for `VERTEX_BUFFER`, `INDEX_BUFFER` and
+`SKIN_WEIGHT_BUFFER` resources. Descriptors expose scalar type, element count,
+byte length, generation and provenance, but never inline buffer bytes.
+
+Each primitive also declares:
+
+```text
+domain                 GEOMETRIC_VERTICES or RENDER_VERTICES
+local_to_world         16 column-major float64 values
+max_influences         maximum non-zero influences on one vertex
+influence_sets         ordered JOINTS_n/WEIGHTS_n resource pairs
+```
+
+All current native adapters normalize world space to
+`RIGHT_HANDED_Y_UP` with `buffer_unit_meters = 1.0`. FBX positions remain
+geometric control points; glTF positions remain render vertices.
+
+### `asset.release`
+
+Releases one retained reference. A final release destroys the asset and all
+owned geometry/skin resources. Future slot reuse increments each generation,
+so old parent and child handles become stale.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 5,
+  "method": "asset.release",
+  "params": {
+    "asset": {
+      "id": "asset:session-id:1:14",
+      "kind": "3D_ASSET",
+      "session": "session-id",
+      "generation": 1,
+      "object_id": 14
+    }
+  }
+}
+```
+
 ### Planned methods
 
 ```text
-asset.load
-asset.release
 asset.save
 geometry.compare
 skeleton.analyze
@@ -198,6 +268,9 @@ MeshHandle
 PrimitiveHandle
 MaterialHandle
 TextureHandle
+VertexBufferHandle
+IndexBufferHandle
+SkinWeightBufferHandle
 SkeletonHandle
 SkinHandle
 AnimationHandle
@@ -211,13 +284,27 @@ Example:
 
 ```json
 {
-  "id": "asset:000014",
+  "id": "asset:session-id:3:14",
   "kind": "3D_ASSET",
-  "format": "GLB"
+  "session": "session-id",
+  "generation": 3,
+  "object_id": 14,
+  "format": "GLTF",
+  "container": "GLB",
+  "provenance": {
+    "producer": "asset.load",
+    "operation_id": "load:session-id:3:14",
+    "source_uri": "C:/assets/character.glb",
+    "source_revision": "runtime-observed-revision",
+    "parents": []
+  }
 }
 ```
 
-The Runtime owns the native object. The frontend owns only the reference.
+The Runtime owns the resource. The frontend owns only a typed reference. A
+handle is valid only for its originating Runtime session, object type, object
+identifier and current generation. Provenance follows the resource and records
+its producer, operation, source revision and parent handles.
 
 ## 8. Long-running operations
 
@@ -278,6 +365,8 @@ errors:
 | `-32001` | Control message exceeds the 4 MiB limit |
 | `-32010` | Analysis validation failed before comparison |
 | `-32011` | Native analysis comparison failed |
+| `-32020` | Invalid, foreign or stale asset handle |
+| `-32021` | Asset registration failed |
 
 The 4 MiB ceiling applies to each stdio control message. This is a defensive
 limit and a design constraint: heavy 3D data belongs to the data plane.

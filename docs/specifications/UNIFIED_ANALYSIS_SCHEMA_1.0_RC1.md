@@ -76,7 +76,8 @@ GLB value `UV Sets: 1` migrates to `uv_channel_count=1`.
 Spatial comparison requires `handedness`, `up_axis`, `forward_axis` and
 `meters_per_unit`. Unknown values remain `null` and produce a validation warning,
 not a guessed default. Bounds are expressed in the declared asset coordinate
-system until a later normalization operation produces a canonical-space record.
+system. Comparison level 7 may transform their eight corners transiently into a
+right-handed, Y-up, −Z-forward metric frame; the source record is not mutated.
 
 ## Topology signatures
 
@@ -90,7 +91,7 @@ Digests are comparable only when both `algorithm` and `domain` match. The
 current FBX and GLB prototype signatures are adapter-local and therefore remain
 diagnostic rather than proof of matching or different topology.
 
-## Comparison levels 0–6
+## Comparison levels 0–7
 
 `unified3d.analysis-comparison/1.0-rc1` evaluates the evidence available in two
 analysis records:
@@ -104,12 +105,15 @@ analysis records:
 | 4 | Triangle statistics | `not_available` |
 | 5 | Vertex statistics | `not_comparable` when semantics differ |
 | 6 | Topology signatures | `not_comparable` when algorithms differ |
+| 7 | Canonical spatial bounds: axes, units, scale and alignment | `not_available` when coordinates or bounds are absent |
 
 Each level returns `match`, `different`, `not_comparable` or `not_available`, an
 optional score, and evidence. Overall `score` is computed only from measured
-level scores; `coverage` reports how much evidence contributed. Spatial surface
-correspondence begins at level 7 and requires geometry-buffer access, so it is
-outside this analysis-record operation.
+level scores; `coverage` reports how much evidence contributed. Level 7 compares
+canonicalized AABBs using extent similarity, normalized center distance and
+intersection-over-union. It establishes a spatial metadata gate only. Spatial
+surface correspondence and weight interpolation require geometry buffers and
+remain outside this analysis-record operation.
 
 ## Compatibility and migration
 
@@ -136,9 +140,9 @@ The first C++20 conformance slice is available in `unified3d-core` and
 
 - typed in-memory representation of all RC1 sections;
 - semantic validation with structured diagnostics;
-- analysis-record comparison levels 0–6;
+- analysis-record comparison levels 0–7;
 - regression parity for the `thief` FBX/GLB measurements under GCC and Clang.
 
-JSON decoding is deliberately not implemented inside Core. The next boundary is
-the native Runtime gateway, which will decode the wire record, construct the
-typed Core value, invoke the operation and serialize its result.
+JSON decoding remains outside Core. The native Runtime gateway decodes the wire
+record, constructs typed Core values, invokes the operation and serializes the
+result. The Python implementation remains the independent conformance oracle.

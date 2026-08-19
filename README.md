@@ -76,13 +76,15 @@ See the complete diagrams and component model in [docs/architecture/ARCHITECTURE
 
 ## Initial executable SDK slice
 
-The first headless Python SDK operation validates the analysis-comparison contract observed through the private FBX and GLB analyzer prototypes:
+The Python package now provides both the local conformance oracle and a typed
+client for the native Runtime:
 
 ```python
-from unified3d import compare_analyses
+from unified3d import Unified3DClient, compare_analyses_oracle
 
-result = compare_analyses(fbx_analysis, glb_analysis)
-print(result.comparison)
+oracle = compare_analyses_oracle(fbx_analysis, glb_analysis)
+with Unified3DClient.connect_stdio(runtime_executable) as client:
+    runtime_result = client.compare_analyses(fbx_analysis, glb_analysis)
 ```
 
 It has no ComfyUI, frontend, renderer, asset-file or GPU dependency. The private ComfyUI comparator is now a thin adapter over this SDK API. The target production architecture remains Python/TypeScript clients calling the deterministic C++20 Runtime operation.
@@ -99,15 +101,19 @@ Their semantics and migration rules are documented in the
 
 ## Initial native C++20 slice
 
-The production-language implementation now contains three layers and a
+The production-language implementation now contains four native layers and a
 persistent executable:
 
-- `unified3d-core`: typed RC1 analysis records and semantic validation;
+- `unified3d-core`: typed RC1 analysis records, semantic validation and
+  immutable geometry/skin buffer contracts;
 - `unified3d-operations`: native analysis-record comparison and compatibility
-  levels 0–6;
+  levels 0–7, including metric canonicalization of axes and bounds;
+- `unified3d-adapters`: pinned cgltf/ufbx decoders plus the optional Autodesk
+  FBX SDK backend, producing the same neutral geometry/skin buffer contract;
 - `unified3d-runtime-lib`: strict RC1 JSON codecs and JSON-RPC dispatch;
-- `unified3d-runtime`: persistent newline-delimited stdio server used to test
-  the protocol before the Windows Named Pipe transport is added.
+- `unified3d-runtime`: persistent newline-delimited JSON-RPC server over stdio
+  or a local Windows Named Pipe, with typed generational asset handles and a
+  Runtime-owned asset and child-buffer registry.
 
 Configure, build and test with one of the checked-in CMake presets:
 
@@ -121,6 +127,17 @@ GCC and Clang presets are provided. The native tests mirror the `thief` FBX/GLB
 regression fixtures and assert parity with the Python reference operation at
 both the C++ API and JSON-RPC boundaries. JSON parsing remains confined to the
 Runtime: Core and Operations do not depend on a JSON library.
+
+The optional Autodesk backend uses the separately installed SDK and MSVC:
+
+```powershell
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' --preset msvc-autodesk
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe' --build --preset dev-msvc-autodesk
+& 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe' --preset dev-msvc-autodesk
+```
+
+The Autodesk headers, libraries and DLL are never copied into the repository.
+Only the installed runtime DLL is copied next to local build executables.
 
 ## Founding workflow
 
@@ -161,21 +178,23 @@ The workflow should preserve the original GLB geometry, materials and textures w
 1. Stabilize the Autodesk FBX Analyzer reference.
 2. Implement the GLB Analyzer.
 3. Validate Unified Analysis Schema 1.0 RC1 in both analyzers.
-4. Extend Geometry Compatibility Comparator from record levels 0–6 to spatial level 7.
+4. ~~Extend Geometry Compatibility Comparator from record levels 0–6 to spatial level 7.~~ Metadata-level canonical bounds comparison complete.
 5. Validate real FBX / GLB differences.
-6. Introduce the minimum Core object model required by observed cases.
+6. ~~Introduce the minimum Core geometry/skin buffer model required by observed cases.~~ Initial immutable buffer contracts complete.
 7. ~~Prototype `unified3d-runtime`.~~ Initial persistent stdio Runtime complete.
-8. Prototype JSON-RPC 2.0 over Windows Named Pipe.
-9. Create `@unified3d/client`.
+8. ~~Prototype JSON-RPC 2.0 over Windows Named Pipe.~~ Initial local transport complete.
+9. ~~Extend the Python Runtime client with typed native resource descriptors.~~ Complete.
 10. Connect the first Workbench operation node.
 
 ## Repository state
 
 The project is in early implementation. The Python SDK contains the reference
 contract, legacy migration and current ComfyUI adapter API. The C++20 Core,
-Operations and Runtime now provide native validation and comparison through a
-persistent JSON-RPC process. Windows Named Pipe transport, native format
-adapters and geometry access remain the next architectural milestones.
+Operations and Runtime now provide native validation, level-7 spatial metadata
+comparison, asset lifetime management, local IPC, native FBX/glTF decoding and
+Runtime-owned geometry/skin resources. Spatial surface correspondence,
+barycentric weight interpolation and the actual skin-transfer operation remain
+later milestones and have intentionally not started.
 
 ## License
 

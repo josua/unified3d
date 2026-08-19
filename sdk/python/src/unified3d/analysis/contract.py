@@ -415,6 +415,22 @@ def validate_analysis(value: AnalysisRecord | dict[str, Any]) -> AnalysisValidat
             scale = coordinate_system.get("meters_per_unit")
             if scale is not None and (isinstance(scale, bool) or not isinstance(scale, (int, float)) or not math.isfinite(scale) or scale <= 0):
                 error("UNIT_SCALE", "$.asset.coordinate_system.meters_per_unit", "Scale must be a finite positive number or null.")
+            handedness = coordinate_system.get("handedness")
+            if handedness is not None and handedness not in {"left", "right"}:
+                error("HANDEDNESS", "$.asset.coordinate_system.handedness", "Handedness must be left, right, or null.")
+            axes = {"X", "-X", "Y", "-Y", "Z", "-Z"}
+            for key in ("up_axis", "forward_axis"):
+                axis = coordinate_system.get(key)
+                if axis is not None and axis not in axes:
+                    error("AXIS", f"$.asset.coordinate_system.{key}", "Axis must be X, -X, Y, -Y, Z, -Z, or null.")
+            up_axis = coordinate_system.get("up_axis")
+            forward_axis = coordinate_system.get("forward_axis")
+            if (
+                up_axis in axes
+                and forward_axis in axes
+                and str(up_axis)[-1] == str(forward_axis)[-1]
+            ):
+                error("AXIS_BASIS", "$.asset.coordinate_system", "Up and forward axes must be orthogonal.")
             if all(coordinate_system.get(key) is None for key in required_coordinates):
                 warning("COORDINATE_SYSTEM_UNKNOWN", "$.asset.coordinate_system", "Spatial compatibility cannot be evaluated until axes and units are known.")
 

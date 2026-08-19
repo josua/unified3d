@@ -36,5 +36,15 @@ if(UNIFIED3D_BUILD_RUNTIME)
     )
     unified3d_enable_warnings(unified3d-runtime-tests)
 
+    if(UNIFIED3D_ENABLE_AUTODESK_FBX)
+        add_custom_command(
+            TARGET unified3d-runtime-tests
+            POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${UNIFIED3D_AUTODESK_FBX_RUNTIME_DLL}"
+                "$<TARGET_FILE_DIR:unified3d-runtime-tests>"
+        )
+    endif()
+
     add_test(NAME unified3d-runtime-tests COMMAND unified3d-runtime-tests)
 endif()

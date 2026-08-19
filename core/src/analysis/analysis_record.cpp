@@ -7,6 +7,21 @@
 namespace unified3d::analysis {
 namespace {
 
+int axis_family(const Axis axis) {
+    switch (axis) {
+        case Axis::positive_x:
+        case Axis::negative_x:
+            return 0;
+        case Axis::positive_y:
+        case Axis::negative_y:
+            return 1;
+        case Axis::positive_z:
+        case Axis::negative_z:
+            return 2;
+    }
+    return -1;
+}
+
 void add_diagnostic(
     ValidationResult& result,
     const DiagnosticSeverity severity,
@@ -175,6 +190,15 @@ ValidationResult validate_analysis_record(const AnalysisRecord& record) {
             DiagnosticSeverity::warning,
             "COORDINATE_SYSTEM_UNKNOWN",
             "Spatial compatibility cannot be evaluated until axes and units are known.",
+            "$.asset.coordinate_system"
+        );
+    } else if (axis_family(*record.asset.coordinate_system.up_axis)
+               == axis_family(*record.asset.coordinate_system.forward_axis)) {
+        add_diagnostic(
+            result,
+            DiagnosticSeverity::error,
+            "AXIS_BASIS",
+            "Up and forward axes must be orthogonal.",
             "$.asset.coordinate_system"
         );
     }

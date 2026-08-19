@@ -9,8 +9,18 @@ from .analysis import (
     ContractIssue,
     canonicalize_analysis,
     compare_analyses,
+    compare_analyses_oracle,
     normalize_analysis,
     validate_analysis,
+)
+from .runtime import (
+    AssetHandle,
+    LoadAssetResult,
+    Provenance,
+    ReleaseAssetResult,
+    RuntimeComparisonResult,
+    RuntimeRPCError,
+    Unified3DClient,
 )
 
 __all__ = [
@@ -19,9 +29,17 @@ __all__ = [
     "AnalysisRecord",
     "AnalysisRecordDict",
     "AnalysisValidationResult",
+    "AssetHandle",
     "ContractIssue",
+    "LoadAssetResult",
+    "Provenance",
+    "ReleaseAssetResult",
+    "RuntimeComparisonResult",
+    "RuntimeRPCError",
+    "Unified3DClient",
     "canonicalize_analysis",
     "compare_analyses",
+    "compare_analyses_oracle",
     "normalize_analysis",
     "validate_analysis",
 ]
