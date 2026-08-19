@@ -54,7 +54,7 @@
                 "additionalProperties": false,
                 "required": ["level", "name", "status", "score", "evidence"],
                 "properties": {
-                  "level": { "type": "integer", "minimum": 0, "maximum": 6 },
+                  "level": { "type": "integer", "minimum": 0, "maximum": 7 },
                   "name": { "type": "string" },
                   "status": { "enum": ["match", "different", "not_comparable", "not_available"] },
                   "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
@@ -62,7 +62,7 @@
                 }
               }
             },
-            "recommended_next_level": { "type": ["integer", "null"], "minimum": 0 }
+            "recommended_next_level": { "type": ["integer", "null"], "minimum": 0, "maximum": 8 }
           }
         }
       }

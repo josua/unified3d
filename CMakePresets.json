@@ -45,12 +45,37 @@
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_CXX_COMPILER": "clang++"
       }
+    },
+    {
+      "name": "msvc-autodesk",
+      "displayName": "MSVC + Autodesk FBX SDK",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": {
+        "CMAKE_TOOLCHAIN_FILE": ""
+      },
+      "cacheVariables": {
+        "UNIFIED3D_BUILD_TESTS": "ON",
+        "UNIFIED3D_ENABLE_AUTODESK_FBX": "ON",
+        "UNIFIED3D_AUTODESK_FBX_SDK_ROOT": "C:/Program Files/Autodesk/FBX/FBX SDK/2020.3.10"
+      }
     }
   ],
   "buildPresets": [
     { "name": "dev-gcc", "configurePreset": "dev-gcc" },
     { "name": "release-gcc", "configurePreset": "release-gcc" },
-    { "name": "dev-clang", "configurePreset": "dev-clang" }
+    { "name": "dev-clang", "configurePreset": "dev-clang" },
+    {
+      "name": "dev-msvc-autodesk",
+      "configurePreset": "msvc-autodesk",
+      "configuration": "Debug"
+    },
+    {
+      "name": "release-msvc-autodesk",
+      "configurePreset": "msvc-autodesk",
+      "configuration": "Release"
+    }
   ],
   "testPresets": [
     {
@@ -66,6 +91,18 @@
     {
       "name": "dev-clang",
       "configurePreset": "dev-clang",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-msvc-autodesk",
+      "configurePreset": "msvc-autodesk",
+      "configuration": "Debug",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "release-msvc-autodesk",
+      "configurePreset": "msvc-autodesk",
+      "configuration": "Release",
       "output": { "outputOnFailure": true }
     }
   ]

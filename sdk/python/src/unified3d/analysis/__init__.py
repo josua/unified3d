@@ -10,6 +10,8 @@ from .contract import (
 )
 from .models import AnalysisRecord, AnalysisRecordDict
 
+compare_analyses_oracle = compare_analyses
+
 __all__ = [
     "ANALYSIS_SCHEMA",
     "AnalysisRecord",
@@ -19,6 +21,7 @@ __all__ = [
     "ContractIssue",
     "canonicalize_analysis",
     "compare_analyses",
+    "compare_analyses_oracle",
     "normalize_analysis",
     "validate_analysis",
 ]

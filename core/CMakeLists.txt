@@ -2,6 +2,7 @@ add_library(
     unified3d-core
     STATIC
         src/analysis/analysis_record.cpp
+        src/geometry/buffers.cpp
 )
 
 add_library(Unified3D::Core ALIAS unified3d-core)

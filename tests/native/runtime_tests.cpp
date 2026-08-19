@@ -1,14 +1,23 @@
 #include <unified3d/runtime/runtime.hpp>
+#include <unified3d/runtime/resource.hpp>
 
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -56,6 +65,44 @@ Json call(
     return Json::parse(*response);
 }
 
+std::filesystem::path temporary_asset(const std::string_view extension) {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path path = std::filesystem::temp_directory_path()
+        / ("unified3d-runtime-test-" + std::to_string(stamp) + std::string{extension});
+    std::ofstream output{path, std::ios::binary};
+    output << "Unified3D test asset";
+    if (!output) {
+        throw std::runtime_error("Cannot create temporary asset: " + path.string());
+    }
+    return path;
+}
+
+std::filesystem::path temporary_gltf_asset() {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    const std::filesystem::path path = std::filesystem::temp_directory_path()
+        / ("unified3d-runtime-test-" + std::to_string(stamp) + ".gltf");
+    std::ofstream output{path, std::ios::binary};
+    output << R"({
+      "asset":{"version":"2.0","generator":"Unified3D test"},
+      "buffers":[{"uri":"data:application/octet-stream;base64,AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAABAAIA","byteLength":42}],
+      "bufferViews":[
+        {"buffer":0,"byteOffset":0,"byteLength":36,"target":34962},
+        {"buffer":0,"byteOffset":36,"byteLength":6,"target":34963}
+      ],
+      "accessors":[
+        {"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]},
+        {"bufferView":1,"componentType":5123,"count":3,"type":"SCALAR"}
+      ],
+      "meshes":[{"name":"triangle","primitives":[{"attributes":{"POSITION":0},"indices":1,"mode":4}]}],
+      "nodes":[{"name":"triangle-node","mesh":0}],
+      "scenes":[{"nodes":[0]}],"scene":0
+    })";
+    if (!output) {
+        throw std::runtime_error("Cannot create temporary glTF asset: " + path.string());
+    }
+    return path;
+}
+
 void protocol_tests() {
     unified3d::runtime::Runtime runtime;
 
@@ -67,8 +114,13 @@ void protocol_tests() {
         "hello must advertise the RC1 analysis schema"
     );
     expect(
-        hello["result"]["capabilities"].size() == 3U,
+        hello["result"]["capabilities"].size() >= 6U,
         "hello must advertise all initial runtime capabilities"
+    );
+    expect(hello["result"]["session_id"].is_string(), "hello must expose the Runtime session");
+    expect(
+        hello["result"]["live_asset_count"] == 0U,
+        "a new Runtime must have an empty asset registry"
     );
 
     const auto parse_error_text = runtime.handle_message("{");
@@ -89,6 +141,207 @@ void protocol_tests() {
         "notifications must not produce a response"
     );
 }
+
+void registry_tests() {
+    const std::filesystem::path path = temporary_asset(".glb");
+    unified3d::runtime::AssetRegistry registry{"test-session"};
+
+    const auto first = registry.load(path);
+    expect(first.success(), "asset registry must load an existing GLB source");
+    expect(!first.reused, "first load must allocate a resource");
+    expect(first.asset->handle.identity.object_id == 1U, "first resource id must be one");
+    expect(first.asset->handle.identity.generation == 1U, "first generation must be one");
+    expect(first.asset->retain_count == 1U, "first load must retain once");
+    expect(first.asset->provenance.producer == "asset.load", "load provenance must name its producer");
+    expect(first.asset->provenance.source_uri.has_value(), "load provenance must preserve source URI");
+    expect(registry.live_asset_count() == 1U, "one live asset must be registered");
+
+    auto position_storage = std::make_shared<std::vector<std::byte>>(36U);
+    auto index_storage = std::make_shared<std::vector<std::byte>>(12U);
+    unified3d::adapters::DecodedAssetBuffers decoded{
+        .adapter = "test-adapter",
+        .joint_names = {},
+        .primitives = {
+            {
+                .name = "triangle",
+                .source_mesh_index = 0U,
+                .source_primitive_index = 0U,
+                .domain = unified3d::adapters::GeometryDomain::render_vertices,
+                .buffers = {
+                    .positions = {
+                        .semantic = unified3d::geometry::VertexSemantic::position,
+                        .view = {
+                            .storage = position_storage,
+                            .element_count = 3U,
+                            .component_count = 3U,
+                            .scalar_type = unified3d::geometry::ScalarType::float32,
+                        },
+                    },
+                    .indices = unified3d::geometry::IndexBuffer{{
+                        .storage = index_storage,
+                        .element_count = 3U,
+                        .component_count = 1U,
+                        .scalar_type = unified3d::geometry::ScalarType::uint32,
+                    }},
+                    .influence_sets = {},
+                    .max_influences = 0U,
+                },
+            },
+        },
+    };
+    const auto registered = registry.register_buffers(first.asset->handle, std::move(decoded));
+    expect(registered.success(), "decoded buffers must register under their asset owner");
+    const auto vertex_handle = registered.asset->primitives[0].positions.handle;
+    const auto index_handle = registered.asset->primitives[0].indices->handle;
+    expect(registry.contains(vertex_handle), "registered vertex handle must resolve");
+    expect(registry.contains(index_handle), "registered index handle must resolve");
+
+    const auto alternate = registry.load(path, "alternate-adapter");
+    expect(alternate.success() && !alternate.reused, "a distinct backend must own a distinct asset resource");
+    expect(alternate.asset->handle != first.asset->handle, "backend variants must not alias handles");
+    expect(registry.live_asset_count() == 2U, "both backend variants must coexist in one Runtime");
+    expect(registry.release(alternate.asset->handle).released, "alternate backend resource must release independently");
+
+    const auto second = registry.load(path);
+    expect(second.success() && second.reused, "unchanged source must reuse its live handle");
+    expect(second.asset->handle == first.asset->handle, "cache reuse must return the same handle");
+    expect(second.asset->retain_count == 2U, "cache reuse must retain the resource");
+
+    const auto retained = registry.release(first.asset->handle);
+    expect(retained.success() && !retained.released, "first release must preserve a second reference");
+    expect(retained.remaining_references == 1U, "one retained reference must remain");
+    const auto released = registry.release(first.asset->handle);
+    expect(released.success() && released.released, "last release must destroy the resource");
+    expect(registry.live_asset_count() == 0U, "released asset must leave the live registry");
+    expect(!registry.find(first.asset->handle).has_value(), "released handle must not resolve");
+    expect(!registry.contains(vertex_handle), "releasing an asset must invalidate its vertex buffers");
+    expect(!registry.contains(index_handle), "releasing an asset must invalidate its index buffers");
+    expect(!registry.release(first.asset->handle).success(), "stale handle must be rejected");
+
+    const auto replacement = registry.load(path);
+    expect(replacement.success(), "released slot must be reusable");
+    expect(replacement.asset->handle.identity.object_id == 1U, "registry should reuse the free slot");
+    expect(replacement.asset->handle.identity.generation == 2U, "slot reuse must advance generation");
+    expect(
+        replacement.asset->handle.encode() != first.asset->handle.encode(),
+        "generation must make a stale encoded handle distinct"
+    );
+
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+}
+
+void asset_rpc_tests() {
+    const std::filesystem::path path = temporary_gltf_asset();
+    unified3d::runtime::Runtime runtime;
+    const Json first = call(runtime, "asset.load", Json{{"path", path.generic_string()}});
+    const Json asset = first["result"]["asset"];
+    expect(first["result"]["reused"] == false, "first RPC load must not report cache reuse");
+    expect(asset["kind"] == "3D_ASSET", "asset RPC must return a typed handle");
+    expect(asset["generation"] == 1U, "asset RPC must expose handle generation");
+    expect(asset["provenance"]["producer"] == "asset.load", "asset RPC must expose provenance");
+    expect(asset["adapter"] == "cgltf/1.15", "asset RPC must expose the native adapter");
+    expect(asset["buffer_coordinate_system"] == "RIGHT_HANDED_Y_UP", "buffers must expose their canonical axes");
+    expect(asset["buffer_unit_meters"] == 1.0, "buffers must expose meters as their canonical unit");
+    expect(asset["primitives"].size() == 1U, "asset RPC must expose one primitive resource set");
+    expect(asset["primitives"][0]["positions"]["element_count"] == 3U, "position descriptor must preserve vertex count");
+    expect(asset["primitives"][0]["indices"]["element_count"] == 3U, "index descriptor must preserve index count");
+
+    const Json second = call(
+        runtime,
+        "asset.load",
+        Json{{"path", path.generic_string()}, {"backend", "cgltf"}}
+    );
+    expect(second["result"]["reused"] == true, "auto and explicit selection of the same backend must reuse unchanged source");
+    expect(second["result"]["asset"]["id"] == asset["id"], "RPC reuse must preserve handle id");
+    expect(second["result"]["asset"]["retain_count"] == 2U, "RPC reuse must expose retain count");
+
+    const Json retained = call(runtime, "asset.release", Json{{"asset", asset}});
+    expect(retained["result"]["released"] == false, "first RPC release must preserve one reference");
+    const Json released = call(runtime, "asset.release", Json{{"asset", asset}});
+    expect(released["result"]["released"] == true, "second RPC release must release the asset");
+    const Json stale = call(runtime, "asset.release", Json{{"asset", asset}});
+    expect(stale["error"]["code"] == -32020, "stale RPC handle must return -32020");
+
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+}
+
+#if defined(_WIN32)
+bool pipe_write_all(const HANDLE pipe, const std::string_view value) {
+    DWORD written = 0U;
+    return WriteFile(
+        pipe,
+        value.data(),
+        static_cast<DWORD>(value.size()),
+        &written,
+        nullptr
+    ) != 0 && written == value.size();
+}
+
+std::string pipe_read_line(const HANDLE pipe) {
+    std::string result;
+    char current{};
+    while (true) {
+        DWORD received = 0U;
+        if (ReadFile(pipe, &current, 1U, &received, nullptr) == 0 || received == 0U) {
+            throw std::runtime_error("Named Pipe closed before a complete response.");
+        }
+        if (current == '\n') {
+            return result;
+        }
+        result.push_back(current);
+    }
+}
+
+void named_pipe_test() {
+    const std::string name = R"(\\.\pipe\Unified3D.Runtime.Test.)"
+        + std::to_string(GetCurrentProcessId());
+    unified3d::runtime::Runtime runtime;
+    int server_exit = -1;
+    std::thread server{[&] { server_exit = unified3d::runtime::run_named_pipe(runtime, name); }};
+
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    for (int attempt = 0; attempt < 100 && pipe == INVALID_HANDLE_VALUE; ++attempt) {
+        pipe = CreateFileA(
+            name.c_str(),
+            GENERIC_READ | GENERIC_WRITE,
+            0U,
+            nullptr,
+            OPEN_EXISTING,
+            0U,
+            nullptr
+        );
+        if (pipe == INVALID_HANDLE_VALUE) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
+    }
+    if (pipe == INVALID_HANDLE_VALUE) {
+        server.detach();
+        throw std::runtime_error("Cannot connect to the Runtime Named Pipe test instance.");
+    }
+
+    expect(
+        pipe_write_all(pipe, R"({"jsonrpc":"2.0","id":1,"method":"runtime.hello"})" "\n"),
+        "Named Pipe client must send hello"
+    );
+    const Json hello = Json::parse(pipe_read_line(pipe));
+    expect(hello["result"]["capabilities"].is_array(), "Named Pipe must use the shared dispatcher");
+    expect(
+        pipe_write_all(pipe, R"({"jsonrpc":"2.0","id":2,"method":"runtime.shutdown"})" "\n"),
+        "Named Pipe client must send shutdown"
+    );
+    const Json shutdown = Json::parse(pipe_read_line(pipe));
+    expect(shutdown["result"]["shutdown"] == true, "Named Pipe must acknowledge shutdown");
+    CloseHandle(pipe);
+    server.join();
+    expect(server_exit == 0, "Named Pipe server must exit cleanly");
+}
+#else
+void named_pipe_test() {
+    expect(!unified3d::runtime::named_pipe_supported(), "non-Windows build must report no Named Pipe support");
+}
+#endif
 
 void validation_tests(const Json& fbx) {
     unified3d::runtime::Runtime runtime;
@@ -158,8 +411,8 @@ void comparison_tests(const Json& fbx, const Json& glb) {
         "the thief pair must require advanced transfer"
     );
     expect(
-        comparison["compatibility"]["levels"].size() == 7U,
-        "all compatibility levels zero through six must be serialized"
+        comparison["compatibility"]["levels"].size() == 8U,
+        "all compatibility levels zero through seven must be serialized"
     );
     expect(
         comparison["compatibility"]["levels"][3]["evidence"]["a_mesh_count"].is_number_unsigned(),
@@ -224,9 +477,12 @@ int main() {
         const Json fbx = read_json_fixture("thief-fbx.analysis-1.0-rc1.json");
         const Json glb = read_json_fixture("thief-glb.analysis-1.0-rc1.json");
         protocol_tests();
+        registry_tests();
+        asset_rpc_tests();
         validation_tests(fbx);
         comparison_tests(fbx, glb);
         stdio_lifecycle_test();
+        named_pipe_test();
     } catch (const std::exception& error) {
         std::cerr << "UNCAUGHT: " << error.what() << '\n';
         return EXIT_FAILURE;

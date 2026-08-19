@@ -1,10 +1,12 @@
 #include <unified3d/core/analysis/analysis_record.hpp>
+#include <unified3d/core/geometry/buffers.hpp>
 #include <unified3d/operations/analysis/compare_analysis_records.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -14,13 +16,23 @@ namespace {
 
 using unified3d::DiagnosticSeverity;
 using unified3d::analysis::AnalysisRecord;
+using unified3d::analysis::Axis;
 using unified3d::analysis::AssetContainer;
 using unified3d::analysis::AssetFormat;
+using unified3d::analysis::Bounds3d;
 using unified3d::analysis::GeometricVertexSemantic;
+using unified3d::analysis::Handedness;
 using unified3d::analysis::TopologySignature;
 using unified3d::operations::analysis::CompatibilityClassification;
 using unified3d::operations::analysis::ComparisonLevelStatus;
 using unified3d::operations::analysis::InputSide;
+using unified3d::geometry::BufferView;
+using unified3d::geometry::IndexBuffer;
+using unified3d::geometry::ScalarType;
+using unified3d::geometry::SkinInfluenceSet;
+using unified3d::geometry::SkinTransferBuffers;
+using unified3d::geometry::VertexAttributeBuffer;
+using unified3d::geometry::VertexSemantic;
 
 int failures = 0;
 
@@ -160,6 +172,18 @@ void validation_tests() {
     const auto insufficient_sets_result =
         unified3d::analysis::validate_analysis_record(insufficient_sets);
     expect(!insufficient_sets_result.valid(), "one influence set cannot preserve six influences");
+
+    auto parallel_axes = thief_glb();
+    parallel_axes.asset.coordinate_system = {
+        .handedness = Handedness::right,
+        .up_axis = Axis::positive_y,
+        .forward_axis = Axis::negative_y,
+        .unit = "m",
+        .meters_per_unit = 1.0,
+    };
+    const auto parallel_axes_result =
+        unified3d::analysis::validate_analysis_record(parallel_axes);
+    expect(!parallel_axes_result.valid(), "parallel up and forward axes must be rejected");
 }
 
 void comparison_parity_tests() {
@@ -200,14 +224,14 @@ void comparison_parity_tests() {
     );
 
     const auto& compatibility = comparison.compatibility;
-    expect(compatibility.levels.size() == 7U, "compatibility must contain levels zero through six");
+    expect(compatibility.levels.size() == 8U, "compatibility must contain levels zero through seven");
     expect(
         compatibility.classification
             == CompatibilityClassification::advanced_transfer_required,
         "thief transfer must require advanced mapping"
     );
     expect(compatibility.recommended_next_level == 1U, "coordinate system is the next unresolved level");
-    expect_near(compatibility.coverage, 2.0 / 6.0, 1.0e-15, "coverage must match Python");
+    expect_near(compatibility.coverage, 2.0 / 7.0, 1.0e-15, "coverage must match Python");
     expect(compatibility.score.has_value(), "partial compatibility score must exist");
     expect_near(
         *compatibility.score,
@@ -230,6 +254,56 @@ void comparison_parity_tests() {
     expect(
         compatibility.levels[6U].status == ComparisonLevelStatus::not_comparable,
         "different signature algorithms must not be compared"
+    );
+    expect(
+        compatibility.levels[7U].status == ComparisonLevelStatus::not_available,
+        "spatial alignment must remain unavailable without axes and bounds"
+    );
+
+    auto spatial_fbx = thief_fbx();
+    spatial_fbx.asset.coordinate_system = {
+        .handedness = Handedness::right,
+        .up_axis = Axis::positive_y,
+        .forward_axis = Axis::negative_z,
+        .unit = "m",
+        .meters_per_unit = 1.0,
+    };
+    spatial_fbx.geometry.bounds = Bounds3d{
+        .min = {-1.0, 0.0, -0.5},
+        .max = {1.0, 2.0, 0.5},
+    };
+    auto spatial_glb = thief_glb();
+    spatial_glb.asset.coordinate_system = {
+        .handedness = Handedness::left,
+        .up_axis = Axis::positive_z,
+        .forward_axis = Axis::positive_y,
+        .unit = "cm",
+        .meters_per_unit = 0.01,
+    };
+    spatial_glb.geometry.bounds = Bounds3d{
+        .min = {-100.0, -50.0, 0.0},
+        .max = {100.0, 50.0, 200.0},
+    };
+    const auto spatial_result = unified3d::operations::analysis::compare_analysis_records(
+        spatial_fbx,
+        spatial_glb
+    );
+    expect(spatial_result.success(), "spatial metadata comparison must succeed");
+    const auto& spatial_compatibility = spatial_result.comparison->compatibility;
+    expect(
+        spatial_compatibility.levels[7U].status == ComparisonLevelStatus::match,
+        "equivalent bounds in different axes and units must spatially match"
+    );
+    expect_near(
+        *spatial_compatibility.levels[7U].score,
+        1.0,
+        1.0e-15,
+        "canonical spatial bounds must produce a perfect score"
+    );
+    expect(
+        spatial_compatibility.classification
+            == CompatibilityClassification::spatial_skin_transfer_required,
+        "aligned dense geometry and rig donor must request spatial skin transfer"
     );
 
     const auto reverse = unified3d::operations::analysis::compare_analysis_records(
@@ -266,12 +340,91 @@ void failure_propagation_test() {
     expect(has_prefixed_error, "input validation errors must identify input A");
 }
 
+std::shared_ptr<const std::vector<std::byte>> bytes(const std::size_t size) {
+    return std::make_shared<const std::vector<std::byte>>(size);
+}
+
+void geometry_buffer_tests() {
+    const VertexAttributeBuffer positions{
+        .semantic = VertexSemantic::position,
+        .view = BufferView{
+            .storage = bytes(24U),
+            .element_count = 2U,
+            .component_count = 3U,
+            .scalar_type = ScalarType::float32,
+        },
+    };
+    const VertexAttributeBuffer joints{
+        .semantic = VertexSemantic::joints,
+        .view = BufferView{
+            .storage = bytes(16U),
+            .element_count = 2U,
+            .component_count = 4U,
+            .scalar_type = ScalarType::uint16,
+        },
+    };
+    const VertexAttributeBuffer weights{
+        .semantic = VertexSemantic::weights,
+        .view = BufferView{
+            .storage = bytes(32U),
+            .element_count = 2U,
+            .component_count = 4U,
+            .scalar_type = ScalarType::float32,
+        },
+    };
+    SkinTransferBuffers transfer{
+        .positions = positions,
+        .indices = IndexBuffer{
+            .view = BufferView{
+                .storage = bytes(6U),
+                .element_count = 3U,
+                .component_count = 1U,
+                .scalar_type = ScalarType::uint16,
+            },
+        },
+        .influence_sets = {
+            SkinInfluenceSet{.joints = joints, .weights = weights},
+            SkinInfluenceSet{.joints = joints, .weights = weights},
+        },
+        .max_influences = 6U,
+    };
+    expect(
+        unified3d::geometry::validate_skin_transfer_buffers(transfer).valid(),
+        "two JOINTS_n/WEIGHTS_n sets must preserve six influences"
+    );
+
+    transfer.influence_sets.pop_back();
+    const auto insufficient =
+        unified3d::geometry::validate_skin_transfer_buffers(transfer);
+    expect(
+        !insufficient.valid(),
+        "one JOINTS_n/WEIGHTS_n set must not claim six influences"
+    );
+
+    transfer.influence_sets.push_back(
+        SkinInfluenceSet{.joints = joints, .weights = weights}
+    );
+    transfer.influence_sets[1U].weights.view.storage = bytes(31U);
+    const auto truncated = unified3d::geometry::validate_skin_transfer_buffers(transfer);
+    expect(!truncated.valid(), "truncated immutable storage must be rejected");
+    expect(
+        std::ranges::any_of(
+            truncated.diagnostics,
+            [](const unified3d::Diagnostic& diagnostic) {
+                return diagnostic.code == "BUFFER_BOUNDS";
+            }
+        ),
+        "truncated storage must report BUFFER_BOUNDS"
+    );
+}
+
 }  // namespace
 
 int main() {
     validation_tests();
     comparison_parity_tests();
     failure_propagation_test();
+    geometry_buffer_tests();
 
     if (failures != 0) {
         std::cerr << failures << " native test(s) failed.\n";

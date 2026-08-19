@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <numeric>
 #include <string_view>
 
@@ -12,6 +13,164 @@ namespace {
 
 using CoreAnalysis = unified3d::analysis::AnalysisRecord;
 using Count = unified3d::analysis::Count;
+using Vec3 = std::array<double, 3>;
+
+std::optional<double> ratio_score(double a, double b);
+
+Vec3 axis_vector(const unified3d::analysis::Axis axis) {
+    using Axis = unified3d::analysis::Axis;
+    switch (axis) {
+        case Axis::positive_x: return {1.0, 0.0, 0.0};
+        case Axis::negative_x: return {-1.0, 0.0, 0.0};
+        case Axis::positive_y: return {0.0, 1.0, 0.0};
+        case Axis::negative_y: return {0.0, -1.0, 0.0};
+        case Axis::positive_z: return {0.0, 0.0, 1.0};
+        case Axis::negative_z: return {0.0, 0.0, -1.0};
+    }
+    return {};
+}
+
+double dot(const Vec3& a, const Vec3& b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+Vec3 cross(const Vec3& a, const Vec3& b) {
+    return {
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    };
+}
+
+struct CanonicalBounds {
+    unified3d::analysis::Bounds3d bounds;
+    Vec3 extents{};
+    Vec3 center{};
+    double diagonal{};
+};
+
+const std::optional<unified3d::analysis::Bounds3d>& preferred_bounds(
+    const CoreAnalysis& record
+) {
+    return record.geometry.bounds.has_value()
+        ? record.geometry.bounds
+        : record.scene.bounds;
+}
+
+std::optional<CanonicalBounds> canonical_bounds(const CoreAnalysis& record) {
+    const auto& coordinates = record.asset.coordinate_system;
+    const auto& source_bounds = preferred_bounds(record);
+    if (!coordinates.complete() || !source_bounds.has_value()) {
+        return std::nullopt;
+    }
+
+    const Vec3 up = axis_vector(*coordinates.up_axis);
+    const Vec3 forward = axis_vector(*coordinates.forward_axis);
+    if (std::abs(dot(up, forward)) > 0.5) {
+        return std::nullopt;
+    }
+    const Vec3 right = *coordinates.handedness == unified3d::analysis::Handedness::right
+        ? cross(forward, up)
+        : cross(up, forward);
+    const double scale = *coordinates.meters_per_unit;
+
+    CanonicalBounds result;
+    result.bounds.min.fill(std::numeric_limits<double>::infinity());
+    result.bounds.max.fill(-std::numeric_limits<double>::infinity());
+    for (std::size_t corner = 0U; corner < 8U; ++corner) {
+        Vec3 source{};
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            source[axis] = (corner & (std::uint64_t{1U} << axis)) != 0U
+                ? source_bounds->max[axis]
+                : source_bounds->min[axis];
+        }
+        const Vec3 canonical{
+            dot(source, right) * scale,
+            dot(source, up) * scale,
+            -dot(source, forward) * scale,
+        };
+        for (std::size_t axis = 0U; axis < 3U; ++axis) {
+            result.bounds.min[axis] = std::min(result.bounds.min[axis], canonical[axis]);
+            result.bounds.max[axis] = std::max(result.bounds.max[axis], canonical[axis]);
+        }
+    }
+
+    double diagonal_squared = 0.0;
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        result.extents[axis] = result.bounds.max[axis] - result.bounds.min[axis];
+        result.center[axis] = (result.bounds.max[axis] + result.bounds.min[axis]) * 0.5;
+        diagonal_squared += result.extents[axis] * result.extents[axis];
+    }
+    result.diagonal = std::sqrt(diagonal_squared);
+    return result;
+}
+
+struct SpatialComparison {
+    double score{};
+    double extent_similarity{};
+    double center_distance_m{};
+    double normalized_center_distance{};
+    double center_alignment{};
+    std::optional<double> bounds_iou;
+};
+
+std::optional<SpatialComparison> compare_spatial_bounds(
+    const CoreAnalysis& a,
+    const CoreAnalysis& b
+) {
+    const auto canonical_a = canonical_bounds(a);
+    const auto canonical_b = canonical_bounds(b);
+    if (!canonical_a.has_value() || !canonical_b.has_value()) {
+        return std::nullopt;
+    }
+
+    SpatialComparison result;
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        result.extent_similarity += *ratio_score(
+            canonical_a->extents[axis],
+            canonical_b->extents[axis]
+        );
+        const double center_delta = canonical_a->center[axis] - canonical_b->center[axis];
+        result.center_distance_m += center_delta * center_delta;
+    }
+    result.extent_similarity /= 3.0;
+    result.center_distance_m = std::sqrt(result.center_distance_m);
+    const double reference_diagonal = std::max(
+        canonical_a->diagonal,
+        canonical_b->diagonal
+    );
+    result.normalized_center_distance = reference_diagonal > 0.0
+        ? result.center_distance_m / reference_diagonal
+        : result.center_distance_m == 0.0 ? 0.0
+                                          : std::numeric_limits<double>::infinity();
+    result.center_alignment = std::isfinite(result.normalized_center_distance)
+        ? 1.0 / (1.0 + result.normalized_center_distance)
+        : 0.0;
+
+    double intersection_volume = 1.0;
+    double volume_a = 1.0;
+    double volume_b = 1.0;
+    for (std::size_t axis = 0U; axis < 3U; ++axis) {
+        intersection_volume *= std::max(
+            0.0,
+            std::min(canonical_a->bounds.max[axis], canonical_b->bounds.max[axis])
+                - std::max(canonical_a->bounds.min[axis], canonical_b->bounds.min[axis])
+        );
+        volume_a *= canonical_a->extents[axis];
+        volume_b *= canonical_b->extents[axis];
+    }
+    const double union_volume = volume_a + volume_b - intersection_volume;
+    if (union_volume > 0.0) {
+        result.bounds_iou = intersection_volume / union_volume;
+        result.score = 0.5 * result.extent_similarity
+            + 0.3 * result.center_alignment
+            + 0.2 * *result.bounds_iou;
+    } else {
+        result.score = 0.625 * result.extent_similarity
+            + 0.375 * result.center_alignment;
+    }
+    return result;
+}
 
 std::optional<double> ratio_score(
     const std::optional<Count> a,
@@ -166,7 +325,7 @@ CompatibilityResult build_compatibility(
     const bool donor_detected
 ) {
     CompatibilityResult result;
-    result.levels.reserve(7U);
+    result.levels.reserve(8U);
     result.levels.push_back(
         ComparisonLevel{
             .level = 0U,
@@ -335,14 +494,63 @@ CompatibilityResult build_compatibility(
         );
     }
 
+    const auto spatial = compare_spatial_bounds(a, b);
+    if (!spatial.has_value()) {
+        const bool coordinates_available = a.asset.coordinate_system.complete()
+            && b.asset.coordinate_system.complete();
+        const bool bounds_available = preferred_bounds(a).has_value()
+            && preferred_bounds(b).has_value();
+        result.levels.push_back(
+            ComparisonLevel{
+                .level = 7U,
+                .name = "spatial_alignment",
+                .status = ComparisonLevelStatus::not_available,
+                .score = std::nullopt,
+                .evidence = {{
+                    "reason",
+                    std::string{
+                        !coordinates_available ? "axes_or_units_not_computed"
+                        : !bounds_available ? "bounds_not_computed"
+                                            : "invalid_axis_basis"
+                    },
+                }},
+            }
+        );
+    } else {
+        Evidence evidence{
+            {"bounds_normalized", true},
+            {"canonical_space", std::string{"right_handed_y_up_negative_z_forward_meters"}},
+            {"center_alignment", spatial->center_alignment},
+            {"center_distance_m", spatial->center_distance_m},
+            {"extent_similarity", spatial->extent_similarity},
+            {"normalized_center_distance", spatial->normalized_center_distance},
+            {"units_normalized", true},
+        };
+        if (spatial->bounds_iou.has_value()) {
+            evidence.emplace("bounds_iou", *spatial->bounds_iou);
+        }
+        const bool spatial_match = spatial->extent_similarity >= 0.99
+            && spatial->normalized_center_distance <= 0.01;
+        result.levels.push_back(
+            ComparisonLevel{
+                .level = 7U,
+                .name = "spatial_alignment",
+                .status = spatial_match ? ComparisonLevelStatus::match
+                                        : ComparisonLevelStatus::different,
+                .score = spatial->score,
+                .evidence = std::move(evidence),
+            }
+        );
+    }
+
     std::vector<double> measured_scores;
-    measured_scores.reserve(6U);
+    measured_scores.reserve(7U);
     for (std::size_t index = 1U; index < result.levels.size(); ++index) {
         if (result.levels[index].score.has_value()) {
             measured_scores.push_back(*result.levels[index].score);
         }
     }
-    result.coverage = static_cast<double>(measured_scores.size()) / 6.0;
+    result.coverage = static_cast<double>(measured_scores.size()) / 7.0;
     if (!measured_scores.empty()) {
         result.score = std::accumulate(measured_scores.begin(), measured_scores.end(), 0.0)
             / static_cast<double>(measured_scores.size());
@@ -350,6 +558,10 @@ CompatibilityResult build_compatibility(
 
     if (result.levels[6U].status == ComparisonLevelStatus::match) {
         result.classification = CompatibilityClassification::exact_topology_match;
+    } else if (result.levels[7U].status == ComparisonLevelStatus::match) {
+        result.classification = donor_detected
+            ? CompatibilityClassification::spatial_skin_transfer_required
+            : CompatibilityClassification::spatial_match;
     } else if (donor_detected && triangle_score.has_value() && *triangle_score < 1.0) {
         result.classification = CompatibilityClassification::advanced_transfer_required;
     }
@@ -362,7 +574,7 @@ CompatibilityResult build_compatibility(
         }
     );
     result.recommended_next_level = unresolved == result.levels.end()
-        ? std::optional<std::size_t>{7U}
+        ? std::optional<std::size_t>{8U}
         : std::optional<std::size_t>{unresolved->level};
     return result;
 }

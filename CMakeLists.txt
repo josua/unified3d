@@ -9,6 +9,11 @@ project(
 
 option(UNIFIED3D_BUILD_TESTS "Build Unified3D native tests" ON)
 option(UNIFIED3D_BUILD_RUNTIME "Build the Unified3D native Runtime" ON)
+option(UNIFIED3D_BUILD_ADAPTERS "Build native FBX and glTF adapters" ON)
+
+if(UNIFIED3D_BUILD_RUNTIME AND NOT UNIFIED3D_BUILD_ADAPTERS)
+    message(FATAL_ERROR "The native Runtime requires UNIFIED3D_BUILD_ADAPTERS=ON.")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,8 +38,15 @@ endfunction()
 add_subdirectory(core)
 add_subdirectory(operations)
 
-if(UNIFIED3D_BUILD_RUNTIME)
+if(UNIFIED3D_BUILD_ADAPTERS)
     include(cmake/Dependencies.cmake)
+    add_subdirectory(adapters)
+endif()
+
+if(UNIFIED3D_BUILD_RUNTIME)
+    if(NOT UNIFIED3D_BUILD_ADAPTERS)
+        include(cmake/Dependencies.cmake)
+    endif()
     add_subdirectory(runtime)
 endif()
 

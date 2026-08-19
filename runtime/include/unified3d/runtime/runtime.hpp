@@ -8,6 +8,9 @@
 
 namespace unified3d::runtime {
 
+inline constexpr std::string_view default_windows_pipe_name =
+    R"(\\.\pipe\Unified3D.Runtime.v1)";
+
 class Runtime final {
 public:
     Runtime();
@@ -27,5 +30,10 @@ private:
 };
 
 int run_stdio(Runtime& runtime, std::istream& input, std::ostream& output);
+[[nodiscard]] bool named_pipe_supported() noexcept;
+int run_named_pipe(
+    Runtime& runtime,
+    std::string_view pipe_name = default_windows_pipe_name
+);
 
 }  // namespace unified3d::runtime

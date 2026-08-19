@@ -99,6 +99,21 @@ class ContractValidationTests(unittest.TestCase):
 
         self.assertEqual(record.geometry["mesh_count"], 10)
 
+    def test_parallel_up_and_forward_axes_are_rejected(self):
+        source = fixture("thief-glb.analysis-1.0-rc1.json")
+        source["asset"]["coordinate_system"] = {
+            "handedness": "right",
+            "up_axis": "Y",
+            "forward_axis": "-Y",
+            "unit": "m",
+            "meters_per_unit": 1.0,
+        }
+
+        result = validate_analysis(source)
+
+        self.assertFalse(result.valid)
+        self.assertIn("AXIS_BASIS", [issue.code for issue in result.errors])
+
 
 class CanonicalizationTests(unittest.TestCase):
     def test_existing_rc1_record_is_copied(self):
@@ -121,24 +136,64 @@ class CanonicalizationTests(unittest.TestCase):
         self.assertEqual(glb.geometry["render_vertex_count"], 1045852)
         self.assertEqual(glb.geometry["uv_channel_count"], 1)
 
-    def test_comparison_contains_levels_zero_through_six(self):
+    def test_comparison_contains_levels_zero_through_seven(self):
         result = compare_analyses(
             fixture("thief-fbx.analysis-1.0-rc1.json"),
             fixture("thief-glb.analysis-1.0-rc1.json"),
         )
         compatibility = result.comparison["compatibility"]
 
-        self.assertEqual([level["level"] for level in compatibility["levels"]], list(range(7)))
+        self.assertEqual([level["level"] for level in compatibility["levels"]], list(range(8)))
         self.assertEqual(compatibility["classification"], "ADVANCED_TRANSFER_REQUIRED")
         self.assertEqual(compatibility["recommended_next_level"], 1)
-        self.assertAlmostEqual(compatibility["coverage"], 2 / 6)
+        self.assertAlmostEqual(compatibility["coverage"], 2 / 7)
         self.assertEqual(compatibility["levels"][5]["status"], "not_comparable")
         self.assertEqual(compatibility["levels"][6]["status"], "not_comparable")
+        self.assertEqual(compatibility["levels"][7]["status"], "not_available")
         serialized = result.to_dict()
         self.assertEqual(serialized["status"], "ok")
         self.assertEqual(serialized["schema"], "unified3d.analysis-comparison/1.0-rc1")
         self.assertEqual(serialized["inputs"]["a"]["schema"], ANALYSIS_SCHEMA)
         self.assertEqual(serialized["inputs"]["b"]["schema"], ANALYSIS_SCHEMA)
+
+    def test_level_seven_normalizes_axes_units_scale_and_bounds(self):
+        fbx = fixture("thief-fbx.analysis-1.0-rc1.json")
+        glb = fixture("thief-glb.analysis-1.0-rc1.json")
+        fbx["asset"]["coordinate_system"] = {
+            "handedness": "right",
+            "up_axis": "Y",
+            "forward_axis": "-Z",
+            "unit": "m",
+            "meters_per_unit": 1.0,
+        }
+        fbx["geometry"]["bounds"] = {
+            "min": [-1.0, 0.0, -0.5],
+            "max": [1.0, 2.0, 0.5],
+        }
+        glb["asset"]["coordinate_system"] = {
+            "handedness": "left",
+            "up_axis": "Z",
+            "forward_axis": "Y",
+            "unit": "cm",
+            "meters_per_unit": 0.01,
+        }
+        glb["geometry"]["bounds"] = {
+            "min": [-100.0, -50.0, 0.0],
+            "max": [100.0, 50.0, 200.0],
+        }
+
+        compatibility = compare_analyses(fbx, glb).comparison["compatibility"]
+        spatial = compatibility["levels"][7]
+
+        self.assertEqual(spatial["status"], "match")
+        self.assertAlmostEqual(spatial["score"], 1.0)
+        self.assertAlmostEqual(spatial["evidence"]["center_distance_m"], 0.0)
+        self.assertAlmostEqual(spatial["evidence"]["bounds_iou"], 1.0)
+        self.assertTrue(spatial["evidence"]["units_normalized"])
+        self.assertEqual(
+            compatibility["classification"],
+            "SPATIAL_SKIN_TRANSFER_REQUIRED",
+        )
 
     def test_semantically_invalid_rc1_input_is_rejected_by_comparator(self):
         source = fixture("thief-fbx.analysis-1.0-rc1.json")

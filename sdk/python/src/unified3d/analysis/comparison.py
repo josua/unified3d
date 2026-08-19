@@ -500,17 +500,159 @@ def _bounds_similarity(a: Any, b: Any) -> float | None:
     return sum(axis_scores) / len(axis_scores)
 
 
+_AXIS_VECTORS: dict[str, tuple[float, float, float]] = {
+    "X": (1.0, 0.0, 0.0),
+    "-X": (-1.0, 0.0, 0.0),
+    "Y": (0.0, 1.0, 0.0),
+    "-Y": (0.0, -1.0, 0.0),
+    "Z": (0.0, 0.0, 1.0),
+    "-Z": (0.0, 0.0, -1.0),
+}
+
+
+def _dot(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+) -> float:
+    return sum(left * right for left, right in zip(a, b))
+
+
+def _cross(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+) -> tuple[float, float, float]:
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _canonical_bounds(
+    coordinates: Any,
+    bounds: Any,
+) -> dict[str, list[float] | float] | None:
+    if not _known_coordinate_system(coordinates) or not isinstance(bounds, dict):
+        return None
+    minimum, maximum = bounds.get("min"), bounds.get("max")
+    if not all(
+        isinstance(value, list) and len(value) == 3
+        for value in (minimum, maximum)
+    ):
+        return None
+    up = _AXIS_VECTORS.get(coordinates["up_axis"])
+    forward = _AXIS_VECTORS.get(coordinates["forward_axis"])
+    if up is None or forward is None or abs(_dot(up, forward)) > 0.5:
+        return None
+    right = (
+        _cross(forward, up)
+        if coordinates["handedness"] == "right"
+        else _cross(up, forward)
+    )
+    scale = float(coordinates["meters_per_unit"])
+    canonical_corners: list[tuple[float, float, float]] = []
+    for corner in range(8):
+        source = tuple(
+            float(maximum[axis] if corner & (1 << axis) else minimum[axis])
+            for axis in range(3)
+        )
+        canonical_corners.append(
+            (
+                _dot(source, right) * scale,
+                _dot(source, up) * scale,
+                -_dot(source, forward) * scale,
+            )
+        )
+    canonical_min = [min(corner[axis] for corner in canonical_corners) for axis in range(3)]
+    canonical_max = [max(corner[axis] for corner in canonical_corners) for axis in range(3)]
+    extents = [canonical_max[axis] - canonical_min[axis] for axis in range(3)]
+    center = [(canonical_max[axis] + canonical_min[axis]) * 0.5 for axis in range(3)]
+    return {
+        "min": canonical_min,
+        "max": canonical_max,
+        "extents": extents,
+        "center": center,
+        "diagonal": math.sqrt(sum(extent * extent for extent in extents)),
+    }
+
+
+def _spatial_comparison(a: dict[str, Any], b: dict[str, Any]) -> dict[str, float] | None:
+    canonical_a = _canonical_bounds(a.get("coordinate_system"), a.get("bounds"))
+    canonical_b = _canonical_bounds(b.get("coordinate_system"), b.get("bounds"))
+    if canonical_a is None or canonical_b is None:
+        return None
+    extents_a = canonical_a["extents"]
+    extents_b = canonical_b["extents"]
+    center_a = canonical_a["center"]
+    center_b = canonical_b["center"]
+    assert isinstance(extents_a, list) and isinstance(extents_b, list)
+    assert isinstance(center_a, list) and isinstance(center_b, list)
+
+    extent_similarity = sum(
+        _ratio_score(extent_a, extent_b) or 0.0
+        for extent_a, extent_b in zip(extents_a, extents_b)
+    ) / 3.0
+    center_distance = math.sqrt(
+        sum((left - right) ** 2 for left, right in zip(center_a, center_b))
+    )
+    reference_diagonal = max(
+        float(canonical_a["diagonal"]),
+        float(canonical_b["diagonal"]),
+    )
+    normalized_center_distance = (
+        center_distance / reference_diagonal
+        if reference_diagonal > 0.0
+        else 0.0 if center_distance == 0.0 else math.inf
+    )
+    center_alignment = (
+        1.0 / (1.0 + normalized_center_distance)
+        if math.isfinite(normalized_center_distance)
+        else 0.0
+    )
+
+    minimum_a = canonical_a["min"]
+    maximum_a = canonical_a["max"]
+    minimum_b = canonical_b["min"]
+    maximum_b = canonical_b["max"]
+    assert all(
+        isinstance(value, list)
+        for value in (minimum_a, maximum_a, minimum_b, maximum_b)
+    )
+    intersection_volume = math.prod(
+        max(0.0, min(maximum_a[axis], maximum_b[axis]) - max(minimum_a[axis], minimum_b[axis]))
+        for axis in range(3)
+    )
+    volume_a = math.prod(extents_a)
+    volume_b = math.prod(extents_b)
+    union_volume = volume_a + volume_b - intersection_volume
+    result = {
+        "extent_similarity": extent_similarity,
+        "center_distance_m": center_distance,
+        "normalized_center_distance": normalized_center_distance,
+        "center_alignment": center_alignment,
+    }
+    if union_volume > 0.0:
+        bounds_iou = intersection_volume / union_volume
+        result["bounds_iou"] = bounds_iou
+        result["score"] = (
+            0.5 * extent_similarity + 0.3 * center_alignment + 0.2 * bounds_iou
+        )
+    else:
+        result["score"] = 0.625 * extent_similarity + 0.375 * center_alignment
+    return result
+
+
 def _compatibility_model(
     a: dict[str, Any],
     b: dict[str, Any],
     *,
     donor_detected: bool,
 ) -> dict[str, Any]:
-    """Evaluate deterministic compatibility levels 0–6.
+    """Evaluate deterministic compatibility levels 0–7.
 
     The levels intentionally report unavailable evidence instead of filling
-    gaps with assumptions. Spatial correspondence begins at level 7 and is not
-    claimed by this analysis-record comparator.
+    gaps with assumptions. Level 7 normalizes metadata bounds into a canonical
+    metric frame; it does not claim vertex correspondence.
     """
 
     levels: list[dict[str, Any]] = []
@@ -649,6 +791,42 @@ def _compatibility_model(
             {"algorithm": a.get("topology_signature_kind"), "same_digest": signatures_match},
         )
 
+    spatial = _spatial_comparison(a, b)
+    if spatial is None:
+        coordinates_available = _known_coordinate_system(coordinates_a) and _known_coordinate_system(coordinates_b)
+        bounds_available = isinstance(a.get("bounds"), dict) and isinstance(b.get("bounds"), dict)
+        reason = (
+            "axes_or_units_not_computed"
+            if not coordinates_available
+            else "bounds_not_computed"
+            if not bounds_available
+            else "invalid_axis_basis"
+        )
+        add(7, "spatial_alignment", "not_available", None, {"reason": reason})
+    else:
+        spatial_match = (
+            spatial["extent_similarity"] >= 0.99
+            and spatial["normalized_center_distance"] <= 0.01
+        )
+        evidence: dict[str, Any] = {
+            "bounds_normalized": True,
+            "canonical_space": "right_handed_y_up_negative_z_forward_meters",
+            "center_alignment": spatial["center_alignment"],
+            "center_distance_m": spatial["center_distance_m"],
+            "extent_similarity": spatial["extent_similarity"],
+            "normalized_center_distance": spatial["normalized_center_distance"],
+            "units_normalized": True,
+        }
+        if "bounds_iou" in spatial:
+            evidence["bounds_iou"] = spatial["bounds_iou"]
+        add(
+            7,
+            "spatial_alignment",
+            "match" if spatial_match else "different",
+            spatial["score"],
+            evidence,
+        )
+
     measured_scores = [
         level["score"]
         for level in levels[1:]
@@ -659,6 +837,10 @@ def _compatibility_model(
     topology_level = levels[6]
     if topology_level["status"] == "match":
         classification: str | None = "EXACT_TOPOLOGY_MATCH"
+    elif levels[7]["status"] == "match":
+        classification = (
+            "SPATIAL_SKIN_TRANSFER_REQUIRED" if donor_detected else "SPATIAL_MATCH"
+        )
     elif donor_detected and triangle_score is not None and triangle_score < 1.0:
         classification = "ADVANCED_TRANSFER_REQUIRED"
     else:
@@ -676,7 +858,7 @@ def _compatibility_model(
         "score": score,
         "coverage": coverage,
         "levels": levels,
-        "recommended_next_level": unresolved if unresolved is not None else 7,
+        "recommended_next_level": unresolved if unresolved is not None else 8,
     }
 
 

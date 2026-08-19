@@ -11,4 +11,22 @@ FetchContent_Declare(
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 
-FetchContent_MakeAvailable(nlohmann_json)
+FetchContent_Declare(
+    ufbx
+    GIT_REPOSITORY https://github.com/ufbx/ufbx.git
+    GIT_TAG fcc5d6ba444cfd3eb80677dba5e37e493941abe5
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES ""
+    SOURCE_SUBDIR unified3d-no-cmake
+)
+
+FetchContent_Declare(
+    cgltf
+    GIT_REPOSITORY https://github.com/jkuhlmann/cgltf.git
+    GIT_TAG 360db1a95480fe102ae9c69b27c5d101167ff5ba
+    GIT_SHALLOW TRUE
+    GIT_SUBMODULES ""
+    SOURCE_SUBDIR unified3d-no-cmake
+)
+
+FetchContent_MakeAvailable(nlohmann_json ufbx cgltf)
