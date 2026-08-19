@@ -1,0 +1,72 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "environment": {
+        "CMAKE_TOOLCHAIN_FILE": ""
+      },
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "UNIFIED3D_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "dev-gcc",
+      "displayName": "Development (GCC)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "release-gcc",
+      "displayName": "Release (GCC)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "dev-clang",
+      "displayName": "Development (Clang)",
+      "inherits": "base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "clang++"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev-gcc", "configurePreset": "dev-gcc" },
+    { "name": "release-gcc", "configurePreset": "release-gcc" },
+    { "name": "dev-clang", "configurePreset": "dev-clang" }
+  ],
+  "testPresets": [
+    {
+      "name": "dev-gcc",
+      "configurePreset": "dev-gcc",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "release-gcc",
+      "configurePreset": "release-gcc",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "dev-clang",
+      "configurePreset": "dev-clang",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

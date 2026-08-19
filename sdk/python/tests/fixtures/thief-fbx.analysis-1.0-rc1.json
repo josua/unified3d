@@ -1,0 +1,90 @@
+{
+  "status": "ok",
+  "schema": "unified3d.analysis/1.0-rc1",
+  "schema_status": "release-candidate",
+  "analyzer": {
+    "name": "FBX Geometry Rig Analyzer",
+    "backend": "Autodesk FBX SDK",
+    "backend_version": null,
+    "analyzer_version": "1.0.0"
+  },
+  "asset": {
+    "path": "C:\\assets\\thief-walking.fbx",
+    "format": "fbx",
+    "container": "fbx",
+    "version": "7.7.0",
+    "generator": "Autodesk FBX SDK",
+    "size_bytes": 88465216,
+    "coordinate_system": {
+      "handedness": null,
+      "up_axis": null,
+      "forward_axis": null,
+      "unit": null,
+      "meters_per_unit": null
+    }
+  },
+  "scene": {
+    "scene_count": null,
+    "node_count": null,
+    "mesh_instance_count": null,
+    "bounds": null
+  },
+  "geometry": {
+    "mesh_count": 10,
+    "primitive_count": null,
+    "geometric_vertex_count": 27311,
+    "geometric_vertex_semantic": "control_points",
+    "render_vertex_count": null,
+    "index_count": null,
+    "polygon_vertex_count": 150177,
+    "polygon_count": 50059,
+    "triangle_count": 50059,
+    "degenerate_triangle_count": null,
+    "ngon_count": null,
+    "uv_channel_count": null,
+    "uv_set_binding_count": 10,
+    "normal_count": null,
+    "tangent_count": null,
+    "color_attribute_count": null,
+    "bounds": null,
+    "topology_signature": {
+      "algorithm": "fbx_adapter_topology",
+      "digest": "fd17e9faa2426bc8",
+      "domain": "adapter-local-decoded-topology"
+    }
+  },
+  "materials": {
+    "material_resource_count": 1,
+    "material_binding_count": null,
+    "texture_resource_count": 3
+  },
+  "skeleton": {
+    "present": true,
+    "joint_count": 41,
+    "root_joint_count": null,
+    "hierarchy_signature": null,
+    "bind_pose_signature": null,
+    "joint_names": null
+  },
+  "skin": {
+    "present": true,
+    "skin_count": 10,
+    "cluster_count": 75,
+    "skinned_vertex_count": null,
+    "max_influences": 6,
+    "influence_set_count": 2
+  },
+  "animation": {
+    "present": true,
+    "clip_count": 1,
+    "channel_count": null,
+    "sampler_count": null,
+    "duration_seconds": null
+  },
+  "native": {
+    "fbx": {
+      "source_schema": "1.0.0"
+    }
+  },
+  "diagnostics": []
+}

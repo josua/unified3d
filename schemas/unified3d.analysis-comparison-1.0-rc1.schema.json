@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unified3d.dev/schemas/unified3d.analysis-comparison-1.0-rc1.schema.json",
+  "title": "Unified3D Analysis Comparison 1.0 RC1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "schema", "inputs", "comparison"],
+  "properties": {
+    "status": { "const": "ok" },
+    "schema": { "const": "unified3d.analysis-comparison/1.0-rc1" },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a", "b"],
+      "properties": {
+        "a": { "type": "object" },
+        "b": { "type": "object" }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "required": [
+        "same_mesh_count", "triangle_ratio_b_over_a",
+        "index_transfer_ruled_out_by_triangle_count",
+        "rig_donor_geometry_target_pattern",
+        "topology_signatures_comparable", "compatibility"
+      ],
+      "properties": {
+        "same_mesh_count": { "type": ["boolean", "null"] },
+        "triangle_ratio_b_over_a": { "type": ["number", "null"], "minimum": 0 },
+        "index_transfer_ruled_out_by_triangle_count": { "type": "boolean" },
+        "rig_donor_geometry_target_pattern": { "type": "object" },
+        "topology_signatures_comparable": { "type": "boolean" },
+        "compatibility": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classification", "score", "coverage", "levels", "recommended_next_level"],
+          "properties": {
+            "classification": {
+              "enum": [
+                "EXACT_TOPOLOGY_MATCH", "DIRECT_SKIN_TRANSFER_COMPATIBLE",
+                "GEOMETRY_MATCH", "GEOMETRIC_VERTEX_MAPPING_REQUIRED",
+                "SPATIAL_MATCH", "SPATIAL_SKIN_TRANSFER_REQUIRED",
+                "SIMILAR_GEOMETRY", "ADVANCED_TRANSFER_REQUIRED",
+                "INCOMPATIBLE", null
+              ]
+            },
+            "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "coverage": { "type": "number", "minimum": 0, "maximum": 1 },
+            "levels": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["level", "name", "status", "score", "evidence"],
+                "properties": {
+                  "level": { "type": "integer", "minimum": 0, "maximum": 6 },
+                  "name": { "type": "string" },
+                  "status": { "enum": ["match", "different", "not_comparable", "not_available"] },
+                  "score": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+                  "evidence": { "type": "object" }
+                }
+              }
+            },
+            "recommended_next_level": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}
