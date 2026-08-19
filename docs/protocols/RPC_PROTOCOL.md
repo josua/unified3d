@@ -21,7 +21,15 @@ unified3d-runtime
 
 ## 2. Initial transports
 
-### Windows
+### Implemented protocol-development transport
+
+The first executable slice uses newline-delimited JSON-RPC 2.0 over standard
+input/output. Each non-empty line is one complete request. Each response is one
+complete line and is flushed immediately. This transport exists to validate the
+wire contract and client SDKs without coupling the protocol to the final IPC
+implementation.
+
+### Planned production transport on Windows
 
 ```text
 Named Pipe
@@ -74,21 +82,66 @@ operation.*
 cache.*
 ```
 
-## 5. Initial minimum methods
+## 5. Implemented methods
 
 ```text
 runtime.hello
 runtime.shutdown
-asset.load
-asset.release
-geometry.analyze
-operation.status
-operation.cancel
+analysis.validate
+analysis.compare
 ```
 
-Planned methods include:
+The Runtime implements JSON-RPC notifications: a request without `id` executes
+but emits no response. Batch requests are not part of the initial slice.
+
+### `runtime.hello`
+
+Returns independent Runtime, Core, protocol and schema versions plus the exact
+capability list. It requires no parameters.
+
+```json
+{"jsonrpc":"2.0","id":1,"method":"runtime.hello"}
+```
+
+### `analysis.validate`
+
+Validates a canonical `unified3d.analysis/1.0-rc1` object structurally and
+semantically. A well-formed request always returns `result.valid`; validation
+diagnostics are machine-readable and include a JSON path.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "analysis.validate",
+  "params": { "analysis": { "...": "canonical RC1 analysis" } }
+}
+```
+
+### `analysis.compare`
+
+Validates two canonical analyses, executes the deterministic native comparison,
+and returns `unified3d.analysis-comparison/1.0-rc1`. Evidence values retain
+their wire type: counts and scores are numbers, predicates are booleans and
+reasons are strings.
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "method": "analysis.compare",
+  "params": {
+    "a": { "...": "canonical analysis A" },
+    "b": { "...": "canonical analysis B" }
+  }
+}
+```
+
+### Planned methods
 
 ```text
+asset.load
+asset.release
 asset.save
 geometry.compare
 skeleton.analyze
@@ -97,6 +150,8 @@ skin.transfer
 animation.extract
 animation.inject
 validation.validate
+operation.status
+operation.cancel
 ```
 
 ## 6. Capability negotiation
@@ -107,13 +162,15 @@ Example:
 
 ```json
 {
-  "runtime_version": "0.2.0",
+  "runtime_version": "0.2.0-dev",
+  "core_version": "0.2.0-dev",
   "protocol_version": "1.0",
+  "analysis_schema": "unified3d.analysis/1.0-rc1",
+  "analysis_comparison_schema": "unified3d.analysis-comparison/1.0-rc1",
   "capabilities": [
-    "fbx.autodesk.read",
-    "gltf.read",
-    "gltf.write",
-    "geometry.compare"
+    "transport.stdio",
+    "analysis.validate",
+    "analysis.compare"
   ]
 }
 ```
@@ -207,6 +264,23 @@ InternalError
 ```
 
 Errors should expose a stable machine-readable code, a human-readable message and structured details when available.
+
+The initial dispatcher uses the standard JSON-RPC errors and two operation
+errors:
+
+| Code | Meaning |
+|---:|---|
+| `-32700` | Parse error |
+| `-32600` | Invalid Request |
+| `-32601` | Method not found |
+| `-32602` | Invalid params |
+| `-32603` | Internal error |
+| `-32001` | Control message exceeds the 4 MiB limit |
+| `-32010` | Analysis validation failed before comparison |
+| `-32011` | Native analysis comparison failed |
+
+The 4 MiB ceiling applies to each stdio control message. This is a defensive
+limit and a design constraint: heavy 3D data belongs to the data plane.
 
 ## 10. Security defaults
 

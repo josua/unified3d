@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "unified3d-sdk"
+version = "0.2.0.dev0"
+description = "Headless Python SDK and runtime client for Unified3D"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Unified3D contributors" },
+]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+unified3d = ["py.typed"]

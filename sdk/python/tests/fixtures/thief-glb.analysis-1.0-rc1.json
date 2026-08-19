@@ -1,0 +1,91 @@
+{
+  "status": "ok",
+  "schema": "unified3d.analysis/1.0-rc1",
+  "schema_status": "release-candidate",
+  "analyzer": {
+    "name": "GLB Geometry Rig Analyzer",
+    "backend": "glTF-Transform",
+    "backend_version": "4.4.2",
+    "analyzer_version": "0.1.0"
+  },
+  "asset": {
+    "path": "C:\\assets\\thief.glb",
+    "format": "gltf",
+    "container": "glb",
+    "version": "2.0",
+    "generator": "Tripo",
+    "size_bytes": null,
+    "coordinate_system": {
+      "handedness": null,
+      "up_axis": null,
+      "forward_axis": null,
+      "unit": null,
+      "meters_per_unit": null
+    }
+  },
+  "scene": {
+    "scene_count": null,
+    "node_count": null,
+    "mesh_instance_count": 10,
+    "bounds": null
+  },
+  "geometry": {
+    "mesh_count": 10,
+    "primitive_count": 10,
+    "geometric_vertex_count": 983579,
+    "geometric_vertex_semantic": "unique_positions",
+    "render_vertex_count": 1045852,
+    "index_count": 5871732,
+    "polygon_vertex_count": null,
+    "polygon_count": null,
+    "triangle_count": 1957244,
+    "degenerate_triangle_count": 0,
+    "ngon_count": 0,
+    "uv_channel_count": 1,
+    "uv_set_binding_count": null,
+    "normal_count": null,
+    "tangent_count": null,
+    "color_attribute_count": null,
+    "bounds": null,
+    "topology_signature": {
+      "algorithm": "decoded_gltf_topology_sha256",
+      "digest": "adf37d930c59a58b1f2be3890623de660f2e47aaf453578b65d487d5c53fbbed",
+      "domain": "adapter-local-decoded-topology"
+    }
+  },
+  "materials": {
+    "material_resource_count": 10,
+    "material_binding_count": 10,
+    "texture_resource_count": 30
+  },
+  "skeleton": {
+    "present": false,
+    "joint_count": 0,
+    "root_joint_count": 0,
+    "hierarchy_signature": null,
+    "bind_pose_signature": null,
+    "joint_names": []
+  },
+  "skin": {
+    "present": false,
+    "skin_count": 0,
+    "cluster_count": 0,
+    "skinned_vertex_count": 0,
+    "max_influences": 0,
+    "influence_set_count": 0
+  },
+  "animation": {
+    "present": false,
+    "clip_count": 0,
+    "channel_count": 0,
+    "sampler_count": 0,
+    "duration_seconds": 0
+  },
+  "native": {
+    "gltf": {
+      "draco_compressed": false,
+      "meshopt_compressed": false
+    }
+  },
+  "diagnostics": []
+}

@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://unified3d.dev/schemas/unified3d.analysis-1.0-rc1.schema.json",
+  "title": "Unified3D Analysis 1.0 RC1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "status", "schema", "schema_status", "analyzer", "asset", "scene",
+    "geometry", "materials", "skeleton", "skin", "animation", "native",
+    "diagnostics"
+  ],
+  "properties": {
+    "status": { "const": "ok" },
+    "schema": { "const": "unified3d.analysis/1.0-rc1" },
+    "schema_status": { "const": "release-candidate" },
+    "analyzer": { "$ref": "#/$defs/analyzer" },
+    "asset": { "$ref": "#/$defs/asset" },
+    "scene": { "$ref": "#/$defs/scene" },
+    "geometry": { "$ref": "#/$defs/geometry" },
+    "materials": { "$ref": "#/$defs/materials" },
+    "skeleton": { "$ref": "#/$defs/skeleton" },
+    "skin": { "$ref": "#/$defs/skin" },
+    "animation": { "$ref": "#/$defs/animation" },
+    "native": { "type": "object" },
+    "diagnostics": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/diagnostic" }
+    }
+  },
+  "$defs": {
+    "nullableNonNegativeInteger": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "nullableString": { "type": ["string", "null"] },
+    "vector3": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "number" }, { "type": "number" }, { "type": "number" }
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "bounds": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["min", "max"],
+      "properties": {
+        "min": { "$ref": "#/$defs/vector3" },
+        "max": { "$ref": "#/$defs/vector3" }
+      }
+    },
+    "analyzer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "backend", "backend_version", "analyzer_version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "backend": { "type": "string", "minLength": 1 },
+        "backend_version": { "$ref": "#/$defs/nullableString" },
+        "analyzer_version": { "$ref": "#/$defs/nullableString" }
+      }
+    },
+    "coordinateSystem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["handedness", "up_axis", "forward_axis", "unit", "meters_per_unit"],
+      "properties": {
+        "handedness": { "enum": ["left", "right", null] },
+        "up_axis": { "enum": ["X", "-X", "Y", "-Y", "Z", "-Z", null] },
+        "forward_axis": { "enum": ["X", "-X", "Y", "-Y", "Z", "-Z", null] },
+        "unit": { "type": ["string", "null"] },
+        "meters_per_unit": { "type": ["number", "null"], "exclusiveMinimum": 0 }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "format", "container", "version", "generator", "size_bytes", "coordinate_system"],
+      "properties": {
+        "path": { "$ref": "#/$defs/nullableString" },
+        "format": { "enum": ["fbx", "gltf", "unknown"] },
+        "container": { "enum": ["fbx", "glb", "gltf", "unknown"] },
+        "version": { "$ref": "#/$defs/nullableString" },
+        "generator": { "$ref": "#/$defs/nullableString" },
+        "size_bytes": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "coordinate_system": { "$ref": "#/$defs/coordinateSystem" }
+      }
+    },
+    "scene": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["scene_count", "node_count", "mesh_instance_count", "bounds"],
+      "properties": {
+        "scene_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "node_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "mesh_instance_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "bounds": { "$ref": "#/$defs/bounds" }
+      }
+    },
+    "topologySignature": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["algorithm", "digest", "domain"],
+      "properties": {
+        "algorithm": { "type": "string", "minLength": 1 },
+        "digest": { "type": "string", "minLength": 1 },
+        "domain": { "type": "string", "minLength": 1 }
+      }
+    },
+    "geometry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mesh_count", "primitive_count", "geometric_vertex_count",
+        "geometric_vertex_semantic", "render_vertex_count", "index_count",
+        "polygon_vertex_count", "polygon_count", "triangle_count",
+        "degenerate_triangle_count", "ngon_count", "uv_channel_count",
+        "uv_set_binding_count", "normal_count", "tangent_count",
+        "color_attribute_count", "bounds", "topology_signature"
+      ],
+      "properties": {
+        "mesh_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "primitive_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "geometric_vertex_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "geometric_vertex_semantic": { "enum": ["control_points", "unique_positions", null] },
+        "render_vertex_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "index_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "polygon_vertex_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "polygon_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "triangle_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "degenerate_triangle_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "ngon_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "uv_channel_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "uv_set_binding_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "normal_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "tangent_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "color_attribute_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "bounds": { "$ref": "#/$defs/bounds" },
+        "topology_signature": { "$ref": "#/$defs/topologySignature" }
+      }
+    },
+    "materials": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["material_resource_count", "material_binding_count", "texture_resource_count"],
+      "properties": {
+        "material_resource_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "material_binding_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "texture_resource_count": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      }
+    },
+    "skeleton": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "joint_count", "root_joint_count", "hierarchy_signature", "bind_pose_signature", "joint_names"],
+      "properties": {
+        "present": { "type": ["boolean", "null"] },
+        "joint_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "root_joint_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "hierarchy_signature": { "$ref": "#/$defs/nullableString" },
+        "bind_pose_signature": { "$ref": "#/$defs/nullableString" },
+        "joint_names": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "skin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "skin_count", "cluster_count", "skinned_vertex_count", "max_influences", "influence_set_count"],
+      "properties": {
+        "present": { "type": ["boolean", "null"] },
+        "skin_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "cluster_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "skinned_vertex_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "max_influences": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "influence_set_count": { "$ref": "#/$defs/nullableNonNegativeInteger" }
+      }
+    },
+    "animation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["present", "clip_count", "channel_count", "sampler_count", "duration_seconds"],
+      "properties": {
+        "present": { "type": ["boolean", "null"] },
+        "clip_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "channel_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "sampler_count": { "$ref": "#/$defs/nullableNonNegativeInteger" },
+        "duration_seconds": { "type": ["number", "null"], "minimum": 0 }
+      }
+    },
+    "diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "code", "message", "path"],
+      "properties": {
+        "severity": { "enum": ["info", "warning", "error"] },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "path": { "$ref": "#/$defs/nullableString" }
+      }
+    }
+  }
+}
