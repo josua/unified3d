@@ -239,6 +239,7 @@ DecodeResult decode_autodesk_fbx(const std::filesystem::path& path) {
     }
     FbxIOSettings* io = FbxIOSettings::Create(manager.get(), IOSROOT);
     manager->SetIOSettings(io);
+    io->SetBoolProp(IMP_FBX_EXTRACT_EMBEDDED_DATA, false);
     std::unique_ptr<FbxImporter, FbxDestroy> importer{FbxImporter::Create(manager.get(), "")};
     std::unique_ptr<FbxScene, FbxDestroy> scene{FbxScene::Create(manager.get(), "Unified3D")};
     const std::string filename = path.string();

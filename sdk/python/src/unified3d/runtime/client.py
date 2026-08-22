@@ -12,9 +12,12 @@ from typing import Any
 from ..analysis import AnalysisRecord, canonicalize_analysis
 from .models import (
     AssetHandle,
+    ConvertGlbToFbxResult,
     LoadAssetResult,
+    NormalizeSpatialResult,
     ReleaseAssetResult,
     RuntimeComparisonResult,
+    SkinTransferResult,
 )
 from .transports import DEFAULT_WINDOWS_PIPE, NamedPipeTransport, RuntimeTransport, StdioTransport
 
@@ -141,6 +144,118 @@ class Unified3DClient:
             released=bool(result["released"]),
             remaining_references=int(result["remaining_references"]),
         )
+
+    def convert_glb_to_fbx(
+        self,
+        asset: AssetHandle,
+        output_path: str | os.PathLike[str],
+        *,
+        embed_media: bool = True,
+        overwrite: bool = False,
+    ) -> ConvertGlbToFbxResult:
+        """Convert an unrigged GLB to native binary FBX without decimation."""
+        if asset.container != "GLB":
+            raise ValueError("convert_glb_to_fbx requires a GLB asset handle")
+        resolved_output = Path(output_path).resolve()
+        if resolved_output.suffix.lower() != ".fbx":
+            raise ValueError("output_path must use the .fbx extension")
+        result = self.request(
+            "asset.convert_glb_to_fbx",
+            {
+                "asset": asset.to_wire(),
+                "output_path": str(resolved_output),
+                "embed_media": bool(embed_media),
+                "overwrite": bool(overwrite),
+            },
+        )
+        return ConvertGlbToFbxResult.from_dict(result)
+
+    def normalize_spatial(
+        self,
+        asset: AssetHandle,
+        output_path: str | os.PathLike[str],
+        *,
+        expected_position_height_m: float | None = 1.70,
+        height_tolerance_m: float = 0.05,
+        correct_scale_factor: bool = True,
+        remove_emissive_channel: bool = True,
+        remove_head_helper_bones: bool = False,
+        remove_animations: bool = False,
+        overwrite: bool = False,
+    ) -> NormalizeSpatialResult:
+        """Apply selected guarded Meshy scale, material, rig and animation corrections."""
+        if asset.container != "GLB":
+            raise ValueError("normalize_spatial requires a GLB asset handle")
+        if not any(
+            (
+                correct_scale_factor,
+                remove_emissive_channel,
+                remove_head_helper_bones,
+                remove_animations,
+            )
+        ):
+            raise ValueError("at least one correction must be enabled")
+        if (
+            correct_scale_factor
+            and expected_position_height_m is not None
+            and expected_position_height_m <= 0
+        ):
+            raise ValueError("expected_position_height_m must be positive or None")
+        if correct_scale_factor and height_tolerance_m <= 0:
+            raise ValueError("height_tolerance_m must be positive")
+        result = self.request(
+            "asset.normalize_spatial",
+            {
+                "asset": asset.to_wire(),
+                "output_path": str(Path(output_path).resolve()),
+                "expected_position_height_m": expected_position_height_m,
+                "height_tolerance_m": height_tolerance_m,
+                "correct_scale_factor": bool(correct_scale_factor),
+                "remove_emissive_channel": bool(remove_emissive_channel),
+                "remove_head_helper_bones": bool(remove_head_helper_bones),
+                "remove_animations": bool(remove_animations),
+                "overwrite": overwrite,
+            },
+        )
+        return NormalizeSpatialResult.from_dict(result)
+
+    def transfer_skin(
+        self,
+        source: AssetHandle,
+        target: AssetHandle,
+        *,
+        quality: str = "balanced",
+        maximum_influences: int = 4,
+        minimum_weight: float = 1.0e-6,
+        maximum_distance_m: float | None = 0.05,
+        replace_existing: bool = False,
+    ) -> SkinTransferResult:
+        """Project donor skin weights onto target render vertices in metric world space."""
+        if source.session != target.session:
+            raise ValueError("source and target must belong to the same Runtime session")
+        if source.id == target.id:
+            raise ValueError("source and target must be distinct assets")
+        if quality not in {"fast", "balanced", "precise", "diagnostic"}:
+            raise ValueError("quality must be fast, balanced, precise, or diagnostic")
+        if maximum_influences < 1 or maximum_influences > 64:
+            raise ValueError("maximum_influences must be between 1 and 64")
+        if minimum_weight < 0:
+            raise ValueError("minimum_weight must be non-negative")
+        if maximum_distance_m is not None and maximum_distance_m <= 0:
+            raise ValueError("maximum_distance_m must be positive or None")
+        result = self.request(
+            "skin.transfer",
+            {
+                "source": source.to_wire(),
+                "target": target.to_wire(),
+                "quality": quality,
+                "maximum_influences": maximum_influences,
+                "minimum_weight": minimum_weight,
+                "maximum_distance_m": maximum_distance_m,
+                "replace_existing": replace_existing,
+            },
+        )
+        return SkinTransferResult.from_dict(result)
 
     def shutdown(self) -> None:
         with self._lock:

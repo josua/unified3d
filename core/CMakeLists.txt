@@ -3,6 +3,9 @@ add_library(
     STATIC
         src/analysis/analysis_record.cpp
         src/geometry/buffers.cpp
+        src/geometry/canonical_fingerprint.cpp
+        src/geometry/skeleton_repair.cpp
+        src/geometry/spatial_skin_transfer.cpp
 )
 
 add_library(Unified3D::Core ALIAS unified3d-core)

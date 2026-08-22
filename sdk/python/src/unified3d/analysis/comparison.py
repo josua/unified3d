@@ -121,12 +121,27 @@ def _base_normalized(kind: str, source_format: str) -> dict[str, Any]:
         "uv_set_count": None,
         "material_count": None,
         "texture_count": None,
+        "image_count": None,
+        "file_size_bytes": None,
+        "texture_encoded_bytes": None,
+        "texture_max_width": None,
+        "texture_max_height": None,
+        "texture_resolution_counts": {},
+        "native_node_count": None,
         "skeleton_element_count": None,
         "skeleton_element_semantic": None,
         "skin_count": None,
         "has_skin": None,
         "max_influences": None,
         "animation_count": None,
+        "raw_animation_count": None,
+        "technical_animation_count": None,
+        "duplicate_animation_count": None,
+        "clip_names": [],
+        "effective_clip_names": [],
+        "animation_channel_count": None,
+        "animation_sampler_count": None,
+        "animation_duration_seconds": None,
         "draco": None,
         "meshopt": None,
         "diagnostic_count": None,
@@ -135,6 +150,9 @@ def _base_normalized(kind: str, source_format: str) -> dict[str, Any]:
         "topology_signature_domain": None,
         "coordinate_system": None,
         "bounds": None,
+        "position_bounds": None,
+        "node_transformed_bounds": None,
+        "spatial_details": None,
     }
 
 
@@ -158,6 +176,12 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
         native = _nested(data, "native", native_format, default={})
         if not isinstance(native, dict):
             native = {}
+        native_animation = native.get("animation", {})
+        if not isinstance(native_animation, dict):
+            native_animation = {}
+        spatial_details = native.get("spatial")
+        if not isinstance(spatial_details, dict):
+            spatial_details = None
         geometric_count = _integer(geometry.get("geometric_vertex_count"))
         render_count = _integer(geometry.get("render_vertex_count"))
         vertex_count = render_count if kind == "GLB" and render_count is not None else geometric_count
@@ -200,6 +224,35 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
                 "has_skin": _boolean(skin.get("present")),
                 "max_influences": _integer(skin.get("max_influences")),
                 "animation_count": _integer(animation.get("clip_count")),
+                "raw_animation_count": _integer(
+                    _first(
+                        native_animation.get("raw_animation_stack_count"),
+                        native_animation.get("raw_animation_count"),
+                        native_animation.get("animation_stack_count"),
+                        animation.get("clip_count"),
+                    )
+                ),
+                "technical_animation_count": _integer(
+                    _first(
+                        native_animation.get("technical_stack_count"),
+                        native_animation.get("technical_clip_count"),
+                    )
+                ),
+                "duplicate_animation_count": _integer(
+                    _first(
+                        native_animation.get("duplicate_stack_count"),
+                        native_animation.get("duplicate_clip_count"),
+                    )
+                ),
+                "clip_names": list(native_animation.get("clip_names", native_animation.get("stack_names", [])))
+                if isinstance(native_animation.get("clip_names", native_animation.get("stack_names", [])), list)
+                else [],
+                "effective_clip_names": list(native_animation.get("effective_clip_names", []))
+                if isinstance(native_animation.get("effective_clip_names"), list)
+                else [],
+                "animation_channel_count": _integer(animation.get("channel_count")),
+                "animation_sampler_count": _integer(animation.get("sampler_count")),
+                "animation_duration_seconds": animation.get("duration_seconds"),
                 "draco": _boolean(native.get("draco_compressed")),
                 "meshopt": _boolean(native.get("meshopt_compressed")),
                 "diagnostic_count": len(diagnostics) if isinstance(diagnostics, list) else None,
@@ -208,6 +261,23 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
                 "topology_signature_domain": signature.get("domain"),
                 "coordinate_system": asset.get("coordinate_system"),
                 "bounds": _first(geometry.get("bounds"), scene.get("bounds")),
+                "position_bounds": (
+                    _first(
+                        spatial_details.get("position_bounds"),
+                        spatial_details.get("local_bounding_box"),
+                    )
+                    if spatial_details
+                    else None
+                ),
+                "node_transformed_bounds": (
+                    _first(
+                        spatial_details.get("node_transformed_bounds"),
+                        spatial_details.get("world_bounding_box"),
+                    )
+                    if spatial_details
+                    else None
+                ),
+                "spatial_details": spatial_details,
             }
         )
         return result
@@ -215,6 +285,10 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
     if kind == "FBX":
         rig = data.get("rig", {}) if isinstance(data.get("rig"), dict) else {}
         animation = data.get("animation", {}) if isinstance(data.get("animation"), dict) else {}
+        scene = data.get("scene", {}) if isinstance(data.get("scene"), dict) else {}
+        effective_animation_count = _integer(
+            _first(animation.get("effective_clip_count"), animation.get("animation_stack_count"))
+        )
         result.update(
             {
                 "file": _nested(data, "file", "path"),
@@ -234,10 +308,32 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
                 "skin_count": _integer(rig.get("skin_deformer_count")),
                 "has_skin": _boolean(rig.get("has_skin")),
                 "max_influences": _integer(rig.get("max_influences_per_control_point")),
-                "animation_count": _integer(animation.get("animation_stack_count")),
+                "animation_count": effective_animation_count,
+                "raw_animation_count": _integer(
+                    _first(animation.get("raw_animation_stack_count"), animation.get("animation_stack_count"))
+                ),
+                "technical_animation_count": _integer(animation.get("technical_stack_count")),
+                "duplicate_animation_count": _integer(animation.get("duplicate_stack_count")),
+                "clip_names": list(animation.get("stack_names", []))
+                if isinstance(animation.get("stack_names"), list)
+                else [],
+                "effective_clip_names": list(animation.get("effective_clip_names", []))
+                if isinstance(animation.get("effective_clip_names"), list)
+                else [],
                 "topology_signature": geometry.get("topology_signature"),
                 "topology_signature_kind": "fbx_adapter_topology",
                 "topology_signature_domain": "adapter-local-decoded-topology",
+                "coordinate_system": {
+                    "handedness": scene.get("handedness"),
+                    "up_axis": scene.get("up_axis"),
+                    "forward_axis": _first(scene.get("forward_axis"), scene.get("front_axis")),
+                    "unit": "meter" if scene.get("meters_per_unit") == 1 else "source_unit",
+                    "meters_per_unit": scene.get("meters_per_unit"),
+                },
+                "bounds": _first(scene.get("world_bounding_box"), scene.get("local_bounding_box")),
+                "position_bounds": scene.get("local_bounding_box"),
+                "node_transformed_bounds": scene.get("world_bounding_box"),
+                "spatial_details": scene,
             }
         )
         return result
@@ -246,6 +342,7 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
         skeleton = data.get("skeleton", {}) if isinstance(data.get("skeleton"), dict) else {}
         skin = data.get("skin", {}) if isinstance(data.get("skin"), dict) else {}
         animation = data.get("animation", {}) if isinstance(data.get("animation"), dict) else {}
+        spatial = data.get("spatial", {}) if isinstance(data.get("spatial"), dict) else {}
         diagnostics = data.get("diagnostics")
         result.update(
             {
@@ -264,12 +361,50 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
                 "uv_set_count": _integer(geometry.get("uv_set_count")),
                 "material_count": _integer(_nested(data, "materials", "material_count")),
                 "texture_count": _integer(_nested(data, "materials", "texture_count")),
+                "image_count": _integer(_nested(data, "materials", "image_count")),
+                "file_size_bytes": _integer(_nested(data, "asset", "size_bytes")),
+                "texture_encoded_bytes": _integer(
+                    _nested(data, "materials", "texture_encoded_bytes")
+                ),
+                "texture_max_width": _integer(
+                    _nested(data, "materials", "texture_max_width")
+                ),
+                "texture_max_height": _integer(
+                    _nested(data, "materials", "texture_max_height")
+                ),
+                "texture_resolution_counts": deepcopy(
+                    _nested(data, "materials", "texture_resolution_counts", default={})
+                )
+                if isinstance(
+                    _nested(data, "materials", "texture_resolution_counts", default={}),
+                    dict,
+                )
+                else {},
+                "native_node_count": _integer(
+                    _nested(data, "native", "gltf", "node_count")
+                ),
                 "skeleton_element_count": _integer(skeleton.get("joint_count")),
                 "skeleton_element_semantic": "joints",
                 "skin_count": _integer(skin.get("skin_count")),
                 "has_skin": _boolean(_first(skin.get("applied"), skin.get("has_skin"))),
                 "max_influences": _integer(skin.get("max_influences")),
-                "animation_count": _integer(animation.get("animation_count")),
+                "animation_count": _integer(
+                    _first(animation.get("effective_clip_count"), animation.get("animation_count"))
+                ),
+                "raw_animation_count": _integer(
+                    _first(animation.get("raw_animation_count"), animation.get("animation_count"))
+                ),
+                "technical_animation_count": _integer(animation.get("technical_clip_count")),
+                "duplicate_animation_count": _integer(animation.get("duplicate_clip_count")),
+                "clip_names": list(animation.get("clip_names", []))
+                if isinstance(animation.get("clip_names"), list)
+                else [],
+                "effective_clip_names": list(animation.get("effective_clip_names", []))
+                if isinstance(animation.get("effective_clip_names"), list)
+                else [],
+                "animation_channel_count": _integer(animation.get("channel_count")),
+                "animation_sampler_count": _integer(animation.get("sampler_count")),
+                "animation_duration_seconds": animation.get("duration_seconds"),
                 "draco": _boolean(_nested(data, "native", "gltf", "draco_compressed")),
                 "meshopt": _boolean(_nested(data, "native", "gltf", "meshopt_compressed")),
                 "diagnostic_count": len(diagnostics) if isinstance(diagnostics, list) else _integer(diagnostics),
@@ -278,6 +413,13 @@ def _normalize_json(data: dict[str, Any]) -> dict[str, Any]:
                 ),
                 "topology_signature_kind": "decoded_gltf_topology_sha256",
                 "topology_signature_domain": "adapter-local-decoded-topology",
+                "coordinate_system": spatial.get("coordinate_system"),
+                "bounds": _first(spatial.get("position_bounds"), geometry.get("bounds")),
+                "position_bounds": _first(spatial.get("position_bounds"), geometry.get("position_bounds")),
+                "node_transformed_bounds": _first(
+                    spatial.get("node_transformed_bounds"), geometry.get("bounds")
+                ),
+                "spatial_details": spatial or None,
             }
         )
         return result
@@ -320,8 +462,21 @@ def _normalize_summary(text: str) -> dict[str, Any]:
             ),
             "uv_set_count": _integer(get("UV Sets")),
             "material_count": _integer(get("Materials")),
+            "file_size_bytes": _integer(get("File Size Bytes")),
             "skin_count": _integer(get("Skins")),
             "animation_count": _integer(get("Animations")),
+            "raw_animation_count": _integer(
+                _first(get("Raw Animation Stacks"), get("Raw Animation Clips"), get("Animations"))
+            ),
+            "technical_animation_count": _integer(
+                _first(get("Technical Animation Stacks"), get("Technical Animation Clips"))
+            ),
+            "duplicate_animation_count": _integer(
+                _first(get("Duplicate Animation Stacks"), get("Duplicate Animation Clips"))
+            ),
+            "effective_clip_names": [
+                name.strip() for name in str(get("Effective Clip Names") or "").split(",") if name.strip()
+            ],
         }
     )
 
@@ -358,6 +513,8 @@ def _normalize_summary(text: str) -> dict[str, Any]:
                 "index_count": _integer(get("Indices")),
                 "degenerate_triangle_count": _integer(get("Degenerate Triangles")),
                 "texture_count": _integer(get("Textures")),
+                "image_count": _integer(get("Texture Images")),
+                "texture_encoded_bytes": _integer(get("Texture Encoded Bytes")),
                 "skeleton_element_count": _integer(get("Joints")),
                 "skeleton_element_semantic": "joints",
                 "has_skin": _boolean(_first(get("Has Applied Skin"), get("Has Skin"))),
@@ -444,6 +601,28 @@ def _skeleton_value(data: dict[str, Any]) -> str:
     count = _number(data.get("skeleton_element_count"))
     semantic = data.get("skeleton_element_semantic")
     return f"{count} ({semantic})" if semantic and count != MISSING else count
+
+
+def _animation_value(data: dict[str, Any]) -> str:
+    effective = data.get("animation_count")
+    raw = data.get("raw_animation_count")
+    if isinstance(effective, int) and isinstance(raw, int) and effective != raw:
+        return f"{_number(effective)} effectif(s) ({_number(raw)} brut(s))"
+    return _number(effective)
+
+
+def _bounds_height_y(bounds: Any) -> float | None:
+    if not isinstance(bounds, dict):
+        return None
+    minimum, maximum = bounds.get("min"), bounds.get("max")
+    if not isinstance(minimum, list) or not isinstance(maximum, list):
+        return None
+    if len(minimum) < 2 or len(maximum) < 2:
+        return None
+    try:
+        return float(maximum[1]) - float(minimum[1])
+    except (TypeError, ValueError):
+        return None
 
 
 def _signature_reading(a: dict[str, Any], b: dict[str, Any]) -> str:
@@ -896,6 +1075,84 @@ def _comparison_model(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     )
 
     donor_detected = donor_side is not None
+    if a.get("kind") == "FBX" and b.get("kind") == "GLB":
+        fbx, glb = a, b
+    elif a.get("kind") == "GLB" and b.get("kind") == "FBX":
+        fbx, glb = b, a
+    else:
+        fbx = glb = None
+
+    topology_candidate: dict[str, Any] = {
+        "detected": False,
+        "strength": "not_available",
+        "evidence": {},
+        "caveat": "A canonical cross-format connectivity signature is required for proof.",
+    }
+    if fbx is not None and glb is not None:
+        evidence = {
+            "mesh_count_equal": (
+                fbx.get("mesh_count") == glb.get("mesh_count")
+                if fbx.get("mesh_count") is not None and glb.get("mesh_count") is not None
+                else None
+            ),
+            "triangle_count_equal": (
+                fbx.get("triangle_count") == glb.get("triangle_count")
+                if fbx.get("triangle_count") is not None and glb.get("triangle_count") is not None
+                else None
+            ),
+            "control_points_equal_unique_positions": (
+                fbx.get("vertex_count") == glb.get("unique_position_tuple_count")
+                if fbx.get("vertex_count") is not None
+                and glb.get("unique_position_tuple_count") is not None
+                else None
+            ),
+            "polygon_vertices_equal_indices": (
+                fbx.get("polygon_vertex_count") == glb.get("index_count")
+                if fbx.get("polygon_vertex_count") is not None and glb.get("index_count") is not None
+                else None
+            ),
+        }
+        core_matches = (
+            evidence["triangle_count_equal"] is True
+            and evidence["control_points_equal_unique_positions"] is True
+        )
+        strong = core_matches and evidence["polygon_vertices_equal_indices"] is True
+        topology_candidate = {
+            "detected": core_matches,
+            "strength": "strong_candidate_not_proven" if strong else "candidate_not_proven" if core_matches else "not_detected",
+            "evidence": evidence,
+            "caveat": "Matching counts are strong evidence, not proof of identical vertex order or connectivity.",
+        }
+    topology_signatures_comparable = (
+        bool(a.get("topology_signature") and b.get("topology_signature"))
+        and a.get("topology_signature_kind") == b.get("topology_signature_kind")
+        and a.get("topology_signature_domain") == b.get("topology_signature_domain")
+    )
+    glb_pair = a.get("kind") == "GLB" and b.get("kind") == "GLB"
+    triangle_a = a.get("triangle_count")
+    triangle_b = b.get("triangle_count")
+    if (
+        glb_pair
+        and isinstance(triangle_a, int)
+        and isinstance(triangle_b, int)
+        and triangle_a > 0
+        and triangle_b > 0
+    ):
+        denser_input = "a" if triangle_a > triangle_b else "b" if triangle_b > triangle_a else None
+        retained_triangle_percent = 100 * min(triangle_a, triangle_b) / max(triangle_a, triangle_b)
+    else:
+        denser_input = None
+        retained_triangle_percent = None
+    texture_bytes_a = a.get("texture_encoded_bytes")
+    texture_bytes_b = b.get("texture_encoded_bytes")
+    texture_byte_ratio_b_over_a = (
+        texture_bytes_b / texture_bytes_a
+        if glb_pair
+        and isinstance(texture_bytes_a, int)
+        and texture_bytes_a > 0
+        and isinstance(texture_bytes_b, int)
+        else None
+    )
     return {
         "same_mesh_count": (
             a.get("mesh_count") == b.get("mesh_count")
@@ -910,11 +1167,36 @@ def _comparison_model(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
             "target": target_side,
             "recommended_next_check": "spatial_alignment" if donor_side else None,
         },
-        "topology_signatures_comparable": (
-            bool(a.get("topology_signature") and b.get("topology_signature"))
-            and a.get("topology_signature_kind") == b.get("topology_signature_kind")
-            and a.get("topology_signature_domain") == b.get("topology_signature_domain")
+        "topology_signatures_comparable": topology_signatures_comparable,
+        "topology_signature_match": (
+            a.get("topology_signature") == b.get("topology_signature")
+            if topology_signatures_comparable
+            else None
         ),
+        "glb_pair": {
+            "detected": glb_pair,
+            "denser_input": denser_input,
+            "retained_triangle_percent": retained_triangle_percent,
+            "texture_inventory": {
+                "available": bool(
+                    glb_pair
+                    and a.get("texture_resolution_counts")
+                    and b.get("texture_resolution_counts")
+                ),
+                "a": {
+                    "image_count": a.get("image_count"),
+                    "encoded_bytes": texture_bytes_a,
+                    "resolution_counts": deepcopy(a.get("texture_resolution_counts", {})),
+                },
+                "b": {
+                    "image_count": b.get("image_count"),
+                    "encoded_bytes": texture_bytes_b,
+                    "resolution_counts": deepcopy(b.get("texture_resolution_counts", {})),
+                },
+                "encoded_byte_ratio_b_over_a": texture_byte_ratio_b_over_a,
+            },
+        },
+        "cross_format_topology_candidate": topology_candidate,
         "compatibility": _compatibility_model(
             a,
             b,
@@ -963,8 +1245,11 @@ def _make_markdown(a: dict[str, Any], b: dict[str, Any], comparison: dict[str, A
         _number(b.get("primitive_count")),
         _numeric_reading(a.get("primitive_count"), b.get("primitive_count")),
     )
+    topology_candidate = comparison.get("cross_format_topology_candidate", {})
     vertex_reading = (
-        "Mesures différentes : aucune équivalence directe"
+        "Candidat de correspondance géométrique inter-format ; ordre des sommets non encore prouvé"
+        if topology_candidate.get("detected") is True
+        else "Mesures différentes : aucune équivalence directe"
         if a.get("vertex_semantic") != b.get("vertex_semantic")
         else _numeric_reading(a.get("vertex_count"), b.get("vertex_count"))
     )
@@ -977,6 +1262,13 @@ def _make_markdown(a: dict[str, Any], b: dict[str, Any], comparison: dict[str, A
         _numeric_reading(
             a.get("unique_position_tuple_count"), b.get("unique_position_tuple_count")
         ),
+    )
+    add(
+        "Topologie",
+        "Correspondance inter-format candidate",
+        topology_candidate.get("strength", MISSING),
+        topology_candidate.get("strength", MISSING),
+        topology_candidate.get("caveat", "Données insuffisantes"),
     )
     add(
         "Géométrie",
@@ -1051,10 +1343,29 @@ def _make_markdown(a: dict[str, Any], b: dict[str, Any], comparison: dict[str, A
     )
     add(
         "Animation",
-        "Animations",
-        _number(a.get("animation_count")),
-        _number(b.get("animation_count")),
+        "Clips effectifs / entrées brutes",
+        _animation_value(a),
+        _animation_value(b),
         _numeric_reading(a.get("animation_count"), b.get("animation_count")),
+    )
+    add(
+        "Animation",
+        "Noms des clips effectifs",
+        ", ".join(a.get("effective_clip_names", [])) or MISSING,
+        ", ".join(b.get("effective_clip_names", [])) or MISSING,
+        (
+            "Identique"
+            if a.get("effective_clip_names")
+            and a.get("effective_clip_names") == b.get("effective_clip_names")
+            else "À comparer"
+        ),
+    )
+    add(
+        "Espace",
+        "Hauteur Y des positions",
+        _number(_bounds_height_y(a.get("position_bounds"))),
+        _number(_bounds_height_y(b.get("position_bounds"))),
+        "Normaliser les axes et unités avant toute décision d’alignement",
     )
     add("Conteneur", "Draco", _yes_no(a.get("draco")), _yes_no(b.get("draco")), _boolean_reading(a.get("draco"), b.get("draco")))
     add("Conteneur", "Meshopt", _yes_no(a.get("meshopt")), _yes_no(b.get("meshopt")), _boolean_reading(a.get("meshopt"), b.get("meshopt")))
@@ -1113,6 +1424,14 @@ def _make_markdown(a: dict[str, Any], b: dict[str, Any], comparison: dict[str, A
             "d’algorithmes d’adaptateur différents."
         )
 
+    candidate = comparison.get("cross_format_topology_candidate", {})
+    if candidate.get("detected"):
+        conclusions.append(
+            "Les compteurs géométriques forment un **candidat fort de correspondance "
+            "FBX/GLB**, mais une signature canonique commune doit encore confirmer "
+            "l’ordre et la connectivité."
+        )
+
     if not conclusions:
         conclusions.append("Aucune conclusion automatique fiable avec les champs disponibles.")
     lines.extend(f"- {conclusion}" for conclusion in conclusions)
@@ -1136,11 +1455,469 @@ def _glb_compression_label(glb: dict[str, Any]) -> str:
     return MISSING
 
 
+def _format_bytes(value: Any) -> str:
+    parsed = _integer(value)
+    if parsed is None:
+        return MISSING
+    return f"{parsed / (1024 * 1024):.2f} Mio".replace(".", ",")
+
+
+def _resolution_summary(glb: dict[str, Any]) -> str:
+    counts = glb.get("texture_resolution_counts")
+    if not isinstance(counts, dict) or not counts:
+        return MISSING
+
+    def area(item: tuple[str, Any]) -> int:
+        match = re.fullmatch(r"(\d+)x(\d+)", str(item[0]))
+        return int(match.group(1)) * int(match.group(2)) if match else -1
+
+    return ", ".join(
+        f"{resolution} × {_number(count)}"
+        for resolution, count in sorted(counts.items(), key=area, reverse=True)
+    )
+
+
+def _short_file_name(value: Any) -> str:
+    text = str(value or "").replace("\\", "/")
+    return text.rsplit("/", 1)[-1] or MISSING
+
+
+def _fbx_numeric_reading(a: Any, b: Any) -> str:
+    """Describe a same-domain FBX count without implying topology equivalence."""
+
+    left = _integer(a)
+    right = _integer(b)
+    if left is None or right is None:
+        return "Donnée non fournie par l’une des analyses"
+    if left == right:
+        return "Identique"
+
+    difference = right - left
+    if left == 0:
+        return f"Écart B − A : {difference:+d}"
+    percentage = 100 * difference / left
+    return (
+        f"Écart B − A : {difference:+d} "
+        f"({_french_decimal(percentage, 4)} %)"
+    )
+
+
+def _fbx_coordinate_label(data: dict[str, Any]) -> str:
+    coordinate_system = data.get("coordinate_system")
+    if not isinstance(coordinate_system, dict):
+        return MISSING
+
+    parts: list[str] = []
+    handedness = coordinate_system.get("handedness")
+    up_axis = coordinate_system.get("up_axis")
+    forward_axis = coordinate_system.get("forward_axis")
+    meters_per_unit = coordinate_system.get("meters_per_unit")
+    if handedness:
+        parts.append("main droite" if str(handedness).casefold() == "right" else str(handedness))
+    if up_axis:
+        parts.append(f"{up_axis} haut")
+    if forward_axis:
+        parts.append(f"{forward_axis} avant")
+    if isinstance(meters_per_unit, (int, float)):
+        parts.append(f"{_french_decimal(float(meters_per_unit), 4)} m/unité")
+    return " ; ".join(parts) if parts else MISSING
+
+
+def _bounds_extent_for_axis(bounds: Any, axis: Any) -> float | None:
+    if not isinstance(bounds, dict):
+        return None
+    minimum, maximum = bounds.get("min"), bounds.get("max")
+    if not isinstance(minimum, list) or not isinstance(maximum, list):
+        return None
+    axis_index = {"X": 0, "Y": 1, "Z": 2}.get(str(axis or "").upper())
+    if axis_index is None or len(minimum) <= axis_index or len(maximum) <= axis_index:
+        return None
+    low, high = minimum[axis_index], maximum[axis_index]
+    if not isinstance(low, (int, float)) or not isinstance(high, (int, float)):
+        return None
+    return float(high - low)
+
+
+def _fbx_vertical_extent(data: dict[str, Any]) -> tuple[float | None, float | None]:
+    up_axis = _nested(data, "coordinate_system", "up_axis")
+    source_height = _bounds_extent_for_axis(data.get("node_transformed_bounds"), up_axis)
+    if source_height is None:
+        source_height = _bounds_height_y(data.get("position_bounds"))
+    meters_per_unit = _nested(data, "coordinate_system", "meters_per_unit")
+    meter_height = (
+        source_height * float(meters_per_unit)
+        if source_height is not None and isinstance(meters_per_unit, (int, float))
+        else None
+    )
+    return source_height, meter_height
+
+
+def _fbx_height_value(data: dict[str, Any]) -> str:
+    source_height, meter_height = _fbx_vertical_extent(data)
+
+    if source_height is not None:
+        if meter_height is not None:
+            return (
+                f"{_french_decimal(source_height, 4)} unités source = "
+                f"{_french_decimal(meter_height, 4)} m"
+            )
+        return f"{_french_decimal(source_height, 4)} unités source"
+    return MISSING
+
+
+def _make_fbx_pair_markdown(
+    a: dict[str, Any], b: dict[str, Any], comparison: dict[str, Any]
+) -> str:
+    """Build a same-adapter FBX comparison with topology-safe conclusions."""
+
+    rows: list[tuple[str, str, str, str]] = []
+
+    def add(property_name: str, value_a: Any, value_b: Any, reading: str) -> None:
+        rows.append(
+            (
+                _escape_markdown(property_name),
+                _escape_markdown(value_a),
+                _escape_markdown(value_b),
+                _escape_markdown(reading),
+            )
+        )
+
+    add(
+        "Fichier",
+        _short_file_name(a.get("file")),
+        _short_file_name(b.get("file")),
+        "Deux entrées FBX analysées avec l’adaptateur Autodesk FBX SDK",
+    )
+    add(
+        "Version FBX",
+        a.get("version"),
+        b.get("version"),
+        "Identique" if a.get("version") == b.get("version") else "Versions de conteneur différentes",
+    )
+
+    for label, key in (
+        ("Maillages", "mesh_count"),
+        ("Control points", "vertex_count"),
+        ("Polygon vertices", "polygon_vertex_count"),
+        ("Polygones", "polygon_count"),
+        ("Triangles (fan-equivalent)", "triangle_count"),
+        ("Ensembles UV", "uv_set_count"),
+        ("Matériaux", "material_count"),
+        ("Textures", "texture_count"),
+        ("Os", "skeleton_element_count"),
+        ("Skins", "skin_count"),
+        ("Influences maximales", "max_influences"),
+    ):
+        add(
+            label,
+            _number(a.get(key)),
+            _number(b.get(key)),
+            _fbx_numeric_reading(a.get(key), b.get(key)),
+        )
+
+    add(
+        "Skin appliqué",
+        _yes_no(a.get("has_skin")),
+        _yes_no(b.get("has_skin")),
+        _boolean_reading(a.get("has_skin"), b.get("has_skin")),
+    )
+
+    names_a = a.get("effective_clip_names", [])
+    names_b = b.get("effective_clip_names", [])
+    if names_a and names_a == names_b:
+        animation_reading = "Mêmes clips effectifs : " + ", ".join(names_a)
+    else:
+        animation_reading = _fbx_numeric_reading(
+            a.get("animation_count"), b.get("animation_count")
+        )
+    add(
+        "Animations",
+        _animation_value(a),
+        _animation_value(b),
+        animation_reading,
+    )
+
+    coordinate_a = _fbx_coordinate_label(a)
+    coordinate_b = _fbx_coordinate_label(b)
+    add(
+        "Axes / unités",
+        coordinate_a,
+        coordinate_b,
+        "Identiques" if coordinate_a != MISSING and coordinate_a == coordinate_b else "Vérifier l’orientation et l’échelle",
+    )
+
+    height_a = _fbx_height_value(a)
+    height_b = _fbx_height_value(b)
+    _, meter_height_a = _fbx_vertical_extent(a)
+    _, meter_height_b = _fbx_vertical_extent(b)
+    if (
+        meter_height_a is not None
+        and meter_height_b is not None
+        and meter_height_a > 0
+    ):
+        height_delta_percent = 100 * (meter_height_b / meter_height_a - 1)
+        height_reading = (
+            "Identique"
+            if math.isclose(meter_height_a, meter_height_b, rel_tol=1e-9, abs_tol=1e-9)
+            else f"Écart B/A : {_french_decimal(height_delta_percent, 4)} %"
+        )
+    else:
+        height_reading = "Comparer les bornes et unités avant transfert"
+    add(
+        "Hauteur selon l’axe vertical",
+        height_a,
+        height_b,
+        height_reading,
+    )
+
+    signatures_comparable = comparison.get("topology_signatures_comparable") is True
+    signatures_match = comparison.get("topology_signature_match") is True
+    if signatures_comparable and signatures_match:
+        topology_reading = "Topologie identique selon la signature de l’adaptateur FBX"
+    elif signatures_comparable:
+        topology_reading = (
+            "Topologies différentes ; un transfert direct par index n’est pas garanti"
+        )
+    else:
+        topology_reading = "Signature absente ou non comparable"
+    add(
+        "Signature topologique",
+        a.get("topology_signature"),
+        b.get("topology_signature"),
+        topology_reading,
+    )
+
+    lines = [
+        "# Comparaison principale",
+        "",
+        "**Mode : FBX ↔ FBX**",
+        "",
+        "| Propriété | FBX A | FBX B | Interprétation |",
+        "|---|---:|---:|---|",
+    ]
+    lines.extend(
+        f"| {property_name} | {value_a} | {value_b} | {reading} |"
+        for property_name, value_a, value_b, reading in rows
+    )
+
+    triangles_a = _integer(a.get("triangle_count"))
+    triangles_b = _integer(b.get("triangle_count"))
+    meshes_match = (
+        a.get("mesh_count") is not None
+        and a.get("mesh_count") == b.get("mesh_count")
+    )
+    close_triangle_counts = (
+        triangles_a is not None
+        and triangles_b is not None
+        and max(triangles_a, triangles_b) > 0
+        and abs(triangles_a - triangles_b) / max(triangles_a, triangles_b) <= 0.001
+    )
+
+    lines.extend(["", "## Conclusion", ""])
+    if meshes_match and close_triangle_counts:
+        lines.append(
+            "- Les structures et densités sont **très proches en comptage**. "
+            "Cela n’établit pas à lui seul une identité topologique."
+        )
+    if signatures_comparable and signatures_match:
+        lines.append(
+            "- Les signatures topologiques correspondent : la topologie décodée par "
+            "l’adaptateur FBX est identique."
+        )
+    elif signatures_comparable:
+        lines.append(
+            "- Les signatures topologiques diffèrent : les deux FBX ne doivent pas être "
+            "considérés comme interchangeables par index."
+        )
+    if a.get("has_skin") is False and b.get("has_skin") is False:
+        lines.append("- Les deux fichiers sont dépourvus de skin.")
+    elif a.get("has_skin") != b.get("has_skin"):
+        lines.append("- Un seul des deux fichiers possède un skin ; vérifier le rôle source/cible.")
+    if a.get("animation_count") == b.get("animation_count") == 0:
+        lines.append("- Les deux fichiers sont dépourvus d’animation effective.")
+    return "\n".join(lines)
+
+
+def _make_glb_pair_markdown(
+    a: dict[str, Any], b: dict[str, Any], comparison: dict[str, Any]
+) -> str:
+    """Build a same-adapter GLB comparison focused on decimation and textures."""
+
+    a_triangles = a.get("triangle_count")
+    b_triangles = b.get("triangle_count")
+    if (
+        isinstance(a_triangles, int)
+        and isinstance(b_triangles, int)
+        and a_triangles != b_triangles
+    ):
+        source, processed = (a, b) if a_triangles > b_triangles else (b, a)
+        source_title, processed_title = "GLB source", "GLB décimé"
+    else:
+        source, processed = a, b
+        source_title, processed_title = "GLB A", "GLB B"
+
+    rows: list[tuple[str, str, str, str]] = []
+
+    def add(property_name: str, source_value: Any, processed_value: Any, reading: str) -> None:
+        rows.append(
+            (
+                _escape_markdown(property_name),
+                _escape_markdown(source_value),
+                _escape_markdown(processed_value),
+                _escape_markdown(reading),
+            )
+        )
+
+    add(
+        "Fichier",
+        _short_file_name(source.get("file")),
+        _short_file_name(processed.get("file")),
+        "Entrées GLB analysées avec le même adaptateur glTF-Transform",
+    )
+    source_size = source.get("file_size_bytes")
+    processed_size = processed.get("file_size_bytes")
+    if isinstance(source_size, int) and source_size > 0 and isinstance(processed_size, int):
+        size_reduction = 100 * (1 - processed_size / source_size)
+        size_reading = f"Réduction du conteneur : {_french_decimal(size_reduction)} %"
+    else:
+        size_reading = "Taille de conteneur non fournie"
+    add("Taille du fichier", _format_bytes(source_size), _format_bytes(processed_size), size_reading)
+
+    source_triangles = source.get("triangle_count")
+    processed_triangles = processed.get("triangle_count")
+    if (
+        isinstance(source_triangles, int)
+        and source_triangles > 0
+        and isinstance(processed_triangles, int)
+    ):
+        retained = 100 * processed_triangles / source_triangles
+        ratio = source_triangles / processed_triangles if processed_triangles > 0 else math.inf
+        triangle_reading = (
+            f"{_french_decimal(retained)} % conservés ; densité divisée par "
+            f"{_french_decimal(ratio)}×"
+        )
+    else:
+        triangle_reading = "Données insuffisantes pour mesurer la décimation"
+    add("Triangles", _number(source_triangles), _number(processed_triangles), triangle_reading)
+
+    add(
+        "Sommets de rendu",
+        _number(source.get("vertex_count")),
+        _number(processed.get("vertex_count")),
+        _numeric_reading(source.get("vertex_count"), processed.get("vertex_count")),
+    )
+    add(
+        "Positions uniques",
+        _number(source.get("unique_position_tuple_count")),
+        _number(processed.get("unique_position_tuple_count")),
+        "Mesure comparable entre ces deux analyses GLB",
+    )
+    add(
+        "Triangles dégénérés",
+        _number(source.get("degenerate_triangle_count")),
+        _number(processed.get("degenerate_triangle_count")),
+        "Aucun triangle dégénéré détecté"
+        if source.get("degenerate_triangle_count") == 0
+        and processed.get("degenerate_triangle_count") == 0
+        else "Vérifier la géométrie dégénérée",
+    )
+
+    for label, key in (
+        ("Maillages", "mesh_count"),
+        ("Primitives", "primitive_count"),
+        ("Matériaux", "material_count"),
+        ("Textures", "texture_count"),
+        ("Images", "image_count"),
+        ("Canaux UV", "uv_set_count"),
+    ):
+        left = source.get(key)
+        right = processed.get(key)
+        add(
+            label,
+            _number(left),
+            _number(right),
+            "Structure conservée" if left is not None and left == right else _numeric_reading(left, right),
+        )
+
+    source_texture_bytes = source.get("texture_encoded_bytes")
+    processed_texture_bytes = processed.get("texture_encoded_bytes")
+    if (
+        isinstance(source_texture_bytes, int)
+        and source_texture_bytes > 0
+        and isinstance(processed_texture_bytes, int)
+    ):
+        texture_reduction = 100 * (1 - processed_texture_bytes / source_texture_bytes)
+        texture_reading = f"Poids encodé des images réduit de {_french_decimal(texture_reduction)} %"
+    else:
+        texture_reading = "Inventaire détaillé requis pour comparer le poids des images"
+    add(
+        "Poids des images",
+        _format_bytes(source_texture_bytes),
+        _format_bytes(processed_texture_bytes),
+        texture_reading,
+    )
+    add(
+        "Résolutions des textures",
+        _resolution_summary(source),
+        _resolution_summary(processed),
+        "La distribution révèle les redimensionnements par canal ; ce n’est pas une texture 2K uniforme",
+    )
+
+    source_height = _bounds_height_y(source.get("node_transformed_bounds"))
+    processed_height = _bounds_height_y(processed.get("node_transformed_bounds"))
+    if source_height is not None and processed_height is not None and source_height > 0:
+        height_change = 100 * (processed_height / source_height - 1)
+        height_reading = f"Variation de hauteur scène : {_french_decimal(height_change)} %"
+        source_height_value = f"{_french_decimal(source_height, 4)} m"
+        processed_height_value = f"{_french_decimal(processed_height, 4)} m"
+    else:
+        height_reading = "Bornes scène non fournies"
+        source_height_value = processed_height_value = MISSING
+    add("Hauteur scène Y", source_height_value, processed_height_value, height_reading)
+
+    signatures_comparable = comparison.get("topology_signatures_comparable") is True
+    signatures_match = comparison.get("topology_signature_match") is True
+    if signatures_comparable and signatures_match:
+        topology_reading = "Topologie décodée identique"
+    elif signatures_comparable:
+        topology_reading = "Topologie reconstruite, résultat attendu après décimation"
+    else:
+        topology_reading = "Signatures indisponibles ou non comparables"
+    add(
+        "Signature topologique",
+        source.get("topology_signature"),
+        processed.get("topology_signature"),
+        topology_reading,
+    )
+    add(
+        "Compression géométrique",
+        _glb_compression_label(source),
+        _glb_compression_label(processed),
+        "Même stratégie de conteneur" if _glb_compression_label(source) == _glb_compression_label(processed) else "Compression différente",
+    )
+
+    lines = [
+        "# Comparaison GLB → GLB",
+        "",
+        f"| Propriété | {source_title} | {processed_title} | Interprétation |",
+        "|---|---:|---:|---|",
+    ]
+    lines.extend(
+        f"| {property_name} | {source_value} | {processed_value} | {reading} |"
+        for property_name, source_value, processed_value, reading in rows
+    )
+    return "\n".join(lines)
+
+
 def _make_interpreted_markdown(
     a: dict[str, Any], b: dict[str, Any], comparison: dict[str, Any]
 ) -> str:
-    """Build a concise FBX-to-GLB table only when both roles are identifiable."""
+    """Build the format-specific primary comparison table."""
 
+    if a.get("kind") == "GLB" and b.get("kind") == "GLB":
+        return _make_glb_pair_markdown(a, b, comparison)
+    if a.get("kind") == "FBX" and b.get("kind") == "FBX":
+        return _make_fbx_pair_markdown(a, b, comparison)
     if a.get("kind") == "FBX" and b.get("kind") == "GLB":
         fbx, glb = a, b
         fbx_side, glb_side = "a", "b"
@@ -1204,7 +1981,9 @@ def _make_interpreted_markdown(
         and fbx_triangles > 0
         and glb_triangles > 0
     ):
-        if glb_triangles >= fbx_triangles:
+        if glb_triangles == fbx_triangles:
+            triangle_interpretation = "Même nombre de triangles ; aucune différence de densité mesurée"
+        elif glb_triangles > fbx_triangles:
             ratio = glb_triangles / fbx_triangles
             triangle_interpretation = (
                 f"Le GLB est environ {_french_decimal(ratio)}× plus dense"
@@ -1236,7 +2015,9 @@ def _make_interpreted_markdown(
             else MISSING
         ),
         (
-            "Représentations différentes"
+            "Le GLB sépare les sommets de rendu aux coutures d’attributs"
+            if comparison.get("cross_format_topology_candidate", {}).get("detected")
+            else "Représentations différentes"
             if fbx.get("vertex_semantic") != glb.get("vertex_semantic")
             else _numeric_reading(fbx.get("vertex_count"), glb.get("vertex_count"))
         ),
@@ -1248,7 +2029,9 @@ def _make_interpreted_markdown(
         MISSING,
         _number(unique_positions),
         (
-            "Diagnostic spatial, pas un équivalent exact des control points"
+            "Égal aux control points FBX : candidat fort, à confirmer par la connectivité"
+            if comparison.get("cross_format_topology_candidate", {}).get("detected")
+            else "Diagnostic spatial, pas un équivalent exact des control points"
             if unique_positions is not None
             else "Diagnostic non fourni"
         ),
@@ -1337,6 +2120,16 @@ def _make_interpreted_markdown(
             f"{group_count} {group_word} `JOINTS_n` / `WEIGHTS_n` seront nécessaires "
             f"si on préserve les {fbx_influences} influences"
         )
+    elif (
+        comparison.get("cross_format_topology_candidate", {}).get("detected")
+        and isinstance(fbx_influences, int)
+        and isinstance(glb_influences, int)
+        and fbx_influences > glb_influences
+    ):
+        influence_interpretation = (
+            f"Le GLB semble plafonné à {glb_influences} influences contre {fbx_influences} "
+            "dans le FBX ; vérifier la réduction et la renormalisation des poids"
+        )
     else:
         influence_interpretation = "Influences à comparer avant le transfert"
     add(
@@ -1354,12 +2147,53 @@ def _make_interpreted_markdown(
         and fbx_animations > 0
         and glb_animations == 0
     )
+    fbx_effective_names = fbx.get("effective_clip_names", [])
+    glb_effective_names = glb.get("effective_clip_names", [])
+    if fbx_effective_names and fbx_effective_names == glb_effective_names:
+        animation_interpretation = (
+            "Même ensemble de clips effectifs : " + ", ".join(fbx_effective_names)
+        )
+    elif animation_from_fbx:
+        animation_interpretation = "L’animation doit venir du FBX"
+    else:
+        animation_interpretation = "Animations à comparer par nom, durée et empreinte de courbes"
     add(
         "Animations",
-        _number(fbx_animations),
-        _number(glb_animations),
-        "L’animation doit venir du FBX" if animation_from_fbx else "Animations à comparer explicitement",
+        _animation_value(fbx),
+        _animation_value(glb),
+        animation_interpretation,
     )
+
+    fbx_position_height = _bounds_height_y(fbx.get("position_bounds"))
+    glb_position_height = _bounds_height_y(glb.get("position_bounds"))
+    glb_transformed_height = _bounds_height_y(glb.get("node_transformed_bounds"))
+    fbx_meters_per_unit = _nested(
+        fbx, "coordinate_system", "meters_per_unit"
+    )
+    if fbx_position_height is not None and isinstance(fbx_meters_per_unit, (int, float)):
+        fbx_height_value = (
+            f"{_french_decimal(fbx_position_height, 4)} unités source = "
+            f"{_french_decimal(fbx_position_height * fbx_meters_per_unit, 4)} m"
+        )
+    elif fbx_position_height is not None:
+        fbx_height_value = f"{_french_decimal(fbx_position_height, 4)} unités source"
+    else:
+        fbx_height_value = MISSING
+    if glb_position_height is not None and glb_transformed_height is not None:
+        glb_height_value = (
+            f"{_french_decimal(glb_position_height, 4)} m POSITION / "
+            f"{_french_decimal(glb_transformed_height, 4)} m scène"
+        )
+        scale_interpretation = (
+            "Une transformation de nœud modifie fortement l’échelle ; évaluer le bind pose avant correction"
+            if glb_position_height > 0
+            and abs(glb_transformed_height / glb_position_height - 1.0) > 0.01
+            else "Échelles POSITION et scène cohérentes"
+        )
+    else:
+        glb_height_value = MISSING
+        scale_interpretation = "Bounds multi-espaces incomplets"
+    add("Échelle / hauteur Y", fbx_height_value, glb_height_value, scale_interpretation)
 
     glb_diagnostics = glb.get("diagnostic_count")
     add(
@@ -1448,14 +2282,29 @@ def compare_analyses(
 
     from .contract import canonicalize_analysis
 
+    detail_keys = (
+        "image_count",
+        "file_size_bytes",
+        "texture_encoded_bytes",
+        "texture_max_width",
+        "texture_max_height",
+        "texture_resolution_counts",
+        "native_node_count",
+    )
     try:
+        source_normalized_a = normalize_analysis(analysis_a)
         canonical_a = canonicalize_analysis(analysis_a)
         normalized_a = normalize_analysis(canonical_a.to_dict())
+        for key in detail_keys:
+            normalized_a[key] = deepcopy(source_normalized_a.get(key))
     except ValueError as error:
         raise ValueError(f"Analysis A: {error}") from error
     try:
+        source_normalized_b = normalize_analysis(analysis_b)
         canonical_b = canonicalize_analysis(analysis_b)
         normalized_b = normalize_analysis(canonical_b.to_dict())
+        for key in detail_keys:
+            normalized_b[key] = deepcopy(source_normalized_b.get(key))
     except ValueError as error:
         raise ValueError(f"Analysis B: {error}") from error
 

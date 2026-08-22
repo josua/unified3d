@@ -4,6 +4,7 @@ add_library(
     unified3d-runtime-lib
     STATIC
         src/json/analysis_codec.cpp
+        src/glb_spatial_normalizer.cpp
         src/resource.cpp
         src/runtime.cpp
         src/transports/named_pipe.cpp
@@ -56,6 +57,5 @@ endif()
 set_target_properties(
     unified3d-runtime-lib
     PROPERTIES
-        OUTPUT_NAME unified3d-runtime
         POSITION_INDEPENDENT_CODE ON
 )

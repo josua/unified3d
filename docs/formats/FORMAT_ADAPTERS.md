@@ -68,6 +68,14 @@ influences without truncating the source maximum. Its output is registered by
 the Runtime under the same immutable resource contract as the portable ufbx
 backend.
 
+The Autodesk-enabled build also provides a guarded GLB-to-FBX writer for
+unrigged assets. It creates a binary FBX without decimation or vertex welding,
+preserves triangle topology, normals, UVs, transforms and PBR texture
+assignments, and can embed all source images. A completed export is reimported
+through the Autodesk adapter so invalid output does not enter the Runtime
+registry. Skins, animation, morph targets and compressed primitives are
+currently refused rather than silently omitted.
+
 The public repository may contain:
 
 ```text
@@ -137,6 +145,12 @@ This distinction is required because UV seams, hard normals and material boundar
 
 A `VertexMapping` can therefore map one geometric vertex to multiple render vertices.
 
-No `VertexMapping`, closest-triangle search, barycentric interpolation or skin
-transfer is implemented in this phase. Native buffer completeness and Runtime
-ownership are deliberate prerequisites.
+Native FBX and glTF buffers now feed a common closest-triangle BVH and
+barycentric skin-weight interpolation operation. The result is registered as
+target-owned `JOINTS_n/WEIGHTS_n` resources with donor and target provenance.
+This proves the shared geometry-buffer contract without pretending that a
+geometric match implies identical vertex order or connectivity.
+
+The current transfer slice does not yet serialize the new buffers or construct
+a target skeleton/bind-pose graph. Format writers remain responsible for
+mapping the shared semantic result back to valid FBX, glTF or future USD data.

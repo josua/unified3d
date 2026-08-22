@@ -149,6 +149,23 @@ class PrimitiveResources:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalGeometryFingerprint:
+    algorithm: str
+    digest: str
+    triangle_count: int
+    position_tolerance_m: float
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "CanonicalGeometryFingerprint":
+        return cls(
+            algorithm=str(value["algorithm"]),
+            digest=str(value["digest"]),
+            triangle_count=int(value["triangle_count"]),
+            position_tolerance_m=float(value["position_tolerance_m"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class AssetHandle:
     id: str
     kind: Literal["3D_ASSET"]
@@ -166,6 +183,7 @@ class AssetHandle:
     buffer_unit_meters: float | None = None
     joint_names: tuple[str, ...] = ()
     primitives: tuple[PrimitiveResources, ...] = ()
+    canonical_geometry_fingerprint: CanonicalGeometryFingerprint | None = None
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> "AssetHandle":
@@ -193,6 +211,11 @@ class AssetHandle:
                 PrimitiveResources.from_dict(item)
                 for item in value.get("primitives", [])
             ),
+            canonical_geometry_fingerprint=CanonicalGeometryFingerprint.from_dict(
+                value["canonical_geometry_fingerprint"]
+            )
+            if isinstance(value.get("canonical_geometry_fingerprint"), dict)
+            else None,
         )
 
     def to_wire(self) -> dict[str, Any]:
@@ -215,6 +238,225 @@ class LoadAssetResult:
 class ReleaseAssetResult:
     released: bool
     remaining_references: int
+
+
+@dataclass(frozen=True, slots=True)
+class GlbToFbxConversionReport:
+    source_path: Path
+    output_path: Path
+    source_size_bytes: int
+    output_size_bytes: int
+    mesh_count: int
+    primitive_count: int
+    control_point_count: int
+    triangle_count: int
+    material_count: int
+    texture_count: int
+    embedded_media_count: int
+    geometry_preserved: bool
+    media_embedded: bool
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "GlbToFbxConversionReport":
+        return cls(
+            source_path=Path(str(value["source_path"])),
+            output_path=Path(str(value["output_path"])),
+            source_size_bytes=int(value["source_size_bytes"]),
+            output_size_bytes=int(value["output_size_bytes"]),
+            mesh_count=int(value["mesh_count"]),
+            primitive_count=int(value["primitive_count"]),
+            control_point_count=int(value["control_point_count"]),
+            triangle_count=int(value["triangle_count"]),
+            material_count=int(value["material_count"]),
+            texture_count=int(value["texture_count"]),
+            embedded_media_count=int(value["embedded_media_count"]),
+            geometry_preserved=bool(value["geometry_preserved"]),
+            media_embedded=bool(value["media_embedded"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ConvertGlbToFbxResult:
+    schema: str
+    source_asset: AssetHandle
+    converted_asset: AssetHandle
+    report: GlbToFbxConversionReport
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ConvertGlbToFbxResult":
+        return cls(
+            schema=str(value["schema"]),
+            source_asset=AssetHandle.from_dict(value["source_asset"]),
+            converted_asset=AssetHandle.from_dict(value["converted_asset"]),
+            report=GlbToFbxConversionReport.from_dict(value["report"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialNormalizationReport:
+    source_path: Path
+    output_path: Path
+    source_size_bytes: int
+    output_size_bytes: int
+    root_node_index: int
+    root_node_name: str
+    absorbed_uniform_scale: float
+    position_height_m: float
+    modified_node_translation_count: int
+    modified_animation_accessor_count: int
+    modified_inverse_bind_matrix_count: int
+    removed_emissive_texture_count: int
+    zeroed_emissive_factor_count: int
+    removed_head_helper_node_count: int
+    removed_head_helper_joint_count: int
+    removed_head_helper_animation_channel_count: int
+    removed_animation_clip_count: int
+    removed_animation_channel_count: int
+    removed_animation_sampler_count: int
+    scale_correction_applied: bool
+    emissive_correction_applied: bool
+    head_helper_bone_removal_applied: bool
+    animation_removal_applied: bool
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SpatialNormalizationReport":
+        return cls(
+            source_path=Path(str(value["source_path"])),
+            output_path=Path(str(value["output_path"])),
+            source_size_bytes=int(value["source_size_bytes"]),
+            output_size_bytes=int(value["output_size_bytes"]),
+            root_node_index=int(value["root_node_index"]),
+            root_node_name=str(value["root_node_name"]),
+            absorbed_uniform_scale=float(value["absorbed_uniform_scale"]),
+            position_height_m=float(value["position_height_m"]),
+            modified_node_translation_count=int(value["modified_node_translation_count"]),
+            modified_animation_accessor_count=int(
+                value["modified_animation_accessor_count"]
+            ),
+            modified_inverse_bind_matrix_count=int(
+                value["modified_inverse_bind_matrix_count"]
+            ),
+            removed_emissive_texture_count=int(
+                value.get("removed_emissive_texture_count", 0)
+            ),
+            zeroed_emissive_factor_count=int(
+                value.get("zeroed_emissive_factor_count", 0)
+            ),
+            removed_head_helper_node_count=int(
+                value.get("removed_head_helper_node_count", 0)
+            ),
+            removed_head_helper_joint_count=int(
+                value.get("removed_head_helper_joint_count", 0)
+            ),
+            removed_head_helper_animation_channel_count=int(
+                value.get("removed_head_helper_animation_channel_count", 0)
+            ),
+            removed_animation_clip_count=int(
+                value.get("removed_animation_clip_count", 0)
+            ),
+            removed_animation_channel_count=int(
+                value.get("removed_animation_channel_count", 0)
+            ),
+            removed_animation_sampler_count=int(
+                value.get("removed_animation_sampler_count", 0)
+            ),
+            scale_correction_applied=bool(
+                value.get("scale_correction_applied", True)
+            ),
+            emissive_correction_applied=bool(
+                value.get("emissive_correction_applied", True)
+            ),
+            head_helper_bone_removal_applied=bool(
+                value.get("head_helper_bone_removal_applied", False)
+            ),
+            animation_removal_applied=bool(
+                value.get("animation_removal_applied", False)
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizeSpatialResult:
+    schema: str
+    source_asset: AssetHandle
+    normalized_asset: AssetHandle
+    report: SpatialNormalizationReport
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "NormalizeSpatialResult":
+        return cls(
+            schema=str(value["schema"]),
+            source_asset=AssetHandle.from_dict(value["source_asset"]),
+            normalized_asset=AssetHandle.from_dict(value["normalized_asset"]),
+            report=SpatialNormalizationReport.from_dict(value["report"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialMappingSample:
+    target_vertex: int
+    source_triangle: int
+    barycentric: tuple[float, float, float]
+    distance_m: float
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SpatialMappingSample":
+        barycentric = tuple(float(item) for item in value["barycentric"])
+        if len(barycentric) != 3:
+            raise ValueError("Runtime returned invalid barycentric coordinates")
+        return cls(
+            target_vertex=int(value["target_vertex"]),
+            source_triangle=int(value["source_triangle"]),
+            barycentric=(barycentric[0], barycentric[1], barycentric[2]),
+            distance_m=float(value["distance_m"]),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkinTransferReport:
+    source_triangle_count: int
+    target_vertex_count: int
+    matched_vertex_count: int
+    rejected_vertex_count: int
+    mean_distance_m: float
+    maximum_distance_m: float
+    output_max_influences: int
+    diagnostic_samples: tuple[SpatialMappingSample, ...]
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SkinTransferReport":
+        return cls(
+            source_triangle_count=int(value["source_triangle_count"]),
+            target_vertex_count=int(value["target_vertex_count"]),
+            matched_vertex_count=int(value["matched_vertex_count"]),
+            rejected_vertex_count=int(value["rejected_vertex_count"]),
+            mean_distance_m=float(value["mean_distance_m"]),
+            maximum_distance_m=float(value["maximum_distance_m"]),
+            output_max_influences=int(value["output_max_influences"]),
+            diagnostic_samples=tuple(
+                SpatialMappingSample.from_dict(item)
+                for item in value.get("diagnostic_samples", [])
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SkinTransferResult:
+    schema: str
+    method: str
+    source_asset: AssetHandle
+    target_asset: AssetHandle
+    report: SkinTransferReport
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "SkinTransferResult":
+        return cls(
+            schema=str(value["schema"]),
+            method=str(value["method"]),
+            source_asset=AssetHandle.from_dict(value["source_asset"]),
+            target_asset=AssetHandle.from_dict(value["target_asset"]),
+            report=SkinTransferReport.from_dict(value["report"]),
+        )
 
 
 @dataclass(frozen=True, slots=True)
