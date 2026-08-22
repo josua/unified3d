@@ -1,5 +1,6 @@
 #include <unified3d/runtime/runtime.hpp>
 #include <unified3d/runtime/resource.hpp>
+#include <unified3d/runtime/glb_spatial_normalizer.hpp>
 
 #include "json/analysis_codec.hpp"
 
@@ -16,7 +17,9 @@
 #include <nlohmann/json.hpp>
 
 #include <unified3d/core/version.hpp>
+#include <unified3d/core/geometry/spatial_skin_transfer.hpp>
 #include <unified3d/adapters/asset_format_adapter.hpp>
+#include <unified3d/adapters/glb_to_fbx_converter.hpp>
 #include <unified3d/operations/analysis/compare_analysis_records.hpp>
 
 namespace unified3d::runtime {
@@ -174,6 +177,16 @@ Json encode_asset(const AssetResource& asset) {
             {"influence_sets", std::move(influence_sets)},
         });
     }
+    Json canonical_fingerprint = nullptr;
+    if (asset.canonical_geometry_fingerprint.has_value()) {
+        const auto& fingerprint = *asset.canonical_geometry_fingerprint;
+        canonical_fingerprint = Json{
+            {"algorithm", fingerprint.algorithm},
+            {"digest", fingerprint.digest},
+            {"triangle_count", fingerprint.triangle_count},
+            {"position_tolerance_m", fingerprint.position_tolerance_m},
+        };
+    }
     return Json{
         {"id", asset.handle.encode()},
         {"kind", "3D_ASSET"},
@@ -192,6 +205,7 @@ Json encode_asset(const AssetResource& asset) {
             ? Json(nullptr) : Json(asset.buffer_unit_meters)},
         {"joint_names", asset.joint_names},
         {"primitives", std::move(primitives)},
+        {"canonical_geometry_fingerprint", std::move(canonical_fingerprint)},
         {"provenance", encode_provenance(asset.provenance)},
     };
 }
@@ -296,13 +310,19 @@ struct Runtime::Impl {
                     "analysis.validate",
                     "analysis.compare",
                     "asset.load",
+                    "asset.normalize_spatial",
                     "asset.release",
+                    "skin.transfer",
                     "resource.geometry_buffers",
+                    "resource.canonical_geometry_fingerprint",
                     "resource.provenance",
                 }
             );
             if (named_pipe_supported()) {
                 capabilities.push_back("transport.windows_named_pipe");
+            }
+            if (adapters::autodesk_fbx_available()) {
+                capabilities.push_back("asset.convert_glb_to_fbx");
             }
             Json result{
                 {"runtime_version", "0.2.0-dev"},
@@ -496,6 +516,488 @@ struct Runtime::Impl {
             Json result{
                 {"released", released.released},
                 {"remaining_references", released.remaining_references},
+            };
+            return notification ? std::nullopt : std::optional<Json>{result_response(id, std::move(result))};
+        }
+
+        if (method == "asset.convert_glb_to_fbx") {
+            if (!params.is_object() || !params.contains("asset")
+                || !params.contains("output_path") || !params["output_path"].is_string()
+                || params["output_path"].get_ref<const std::string&>().empty()) {
+                return fail_request(
+                    -32602,
+                    "Invalid params",
+                    Json{{"required", Json::array({"asset", "output_path"})}}
+                );
+            }
+            const auto handle = decode_asset_handle(params["asset"]);
+            if (!handle.has_value()) {
+                return fail_request(-32602, "Invalid params", Json{{"field", "asset"}});
+            }
+            const auto source_asset = assets.find(*handle);
+            if (!source_asset.has_value()) {
+                return fail_request(
+                    -32020,
+                    "Invalid asset handle",
+                    Json{{"code", "STALE_HANDLE"}}
+                );
+            }
+            if (source_asset->container != analysis::AssetContainer::glb) {
+                return fail_request(
+                    -32040,
+                    "GLB-to-FBX conversion requires a GLB asset",
+                    Json{{"container", asset_container_name(source_asset->container)}}
+                );
+            }
+
+            adapters::GlbToFbxConversionOptions options;
+            if (params.contains("embed_media")) {
+                if (!params["embed_media"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "embed_media"}});
+                }
+                options.embed_media = params["embed_media"].get<bool>();
+            }
+            if (params.contains("overwrite")) {
+                if (!params["overwrite"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "overwrite"}});
+                }
+                options.overwrite = params["overwrite"].get<bool>();
+            }
+            const std::filesystem::path output_path = path_from_utf8(
+                params["output_path"].get<std::string>()
+            );
+            adapters::GlbToFbxConversionResult converted =
+                adapters::convert_unrigged_glb_to_fbx(
+                    source_asset->canonical_path, output_path, options
+                );
+            if (!converted.success()) {
+                return fail_request(
+                    -32041,
+                    "GLB-to-FBX conversion failed",
+                    Json{{"diagnostics", json_codec::encode_diagnostics(converted.diagnostics)}}
+                );
+            }
+
+            auto loaded = assets.load(converted.report->output_path, "autodesk_fbx");
+            if (!loaded.success()) {
+                return fail_request(
+                    -32042,
+                    "Converted FBX registration failed",
+                    Json{{"code", loaded.error->code}, {"detail", loaded.error->message}}
+                );
+            }
+            if (!loaded.reused) {
+                adapters::DecodeResult decoded = adapters::decode_asset_buffers(
+                    loaded.asset->canonical_path,
+                    adapters::AdapterBackend::autodesk_fbx
+                );
+                if (!decoded.success()) {
+                    static_cast<void>(assets.release(loaded.asset->handle));
+                    return fail_request(
+                        -32043,
+                        "Converted FBX validation failed",
+                        Json{{"diagnostics", json_codec::encode_diagnostics(decoded.diagnostics)}}
+                    );
+                }
+                RegisterBuffersResult registered = assets.register_buffers(
+                    loaded.asset->handle, std::move(*decoded.asset)
+                );
+                if (!registered.success()) {
+                    static_cast<void>(assets.release(loaded.asset->handle));
+                    return fail_request(
+                        -32044,
+                        "Converted FBX buffer registration failed",
+                        Json{{"code", registered.error->code}, {"detail", registered.error->message}}
+                    );
+                }
+                loaded.asset = std::move(registered.asset);
+            }
+            bool geometry_preserved = false;
+            if (source_asset->canonical_geometry_fingerprint.has_value()
+                && loaded.asset->canonical_geometry_fingerprint.has_value()) {
+                const auto& source_fingerprint =
+                    *source_asset->canonical_geometry_fingerprint;
+                const auto& converted_fingerprint =
+                    *loaded.asset->canonical_geometry_fingerprint;
+                geometry_preserved =
+                    source_fingerprint.algorithm == converted_fingerprint.algorithm
+                    && source_fingerprint.digest == converted_fingerprint.digest
+                    && source_fingerprint.triangle_count
+                        == converted_fingerprint.triangle_count
+                    && source_fingerprint.position_tolerance_m
+                        == converted_fingerprint.position_tolerance_m;
+            }
+            if (!geometry_preserved) {
+                static_cast<void>(assets.release(loaded.asset->handle));
+                return fail_request(
+                    -32046,
+                    "Converted FBX geometry validation failed",
+                    Json{{"code", "CANONICAL_GEOMETRY_MISMATCH"}}
+                );
+            }
+            converted.report->geometry_preserved = true;
+            const auto provenance = assets.update_provenance(
+                loaded.asset->handle,
+                ProvenanceRecord{
+                    .producer = "asset.convert_glb_to_fbx",
+                    .operation_id = "convert-glb-to-fbx:" + assets.session_id() + ":"
+                        + std::to_string(loaded.asset->handle.identity.generation) + ":"
+                        + std::to_string(loaded.asset->handle.identity.object_id),
+                    .source_uri = converted.report->output_path.generic_string(),
+                    .source_revision = std::nullopt,
+                    .parents = {source_asset->handle},
+                }
+            );
+            if (!provenance.success()) {
+                static_cast<void>(assets.release(loaded.asset->handle));
+                return fail_request(
+                    -32045,
+                    "Converted FBX provenance registration failed",
+                    Json{{"code", provenance.error->code}, {"detail", provenance.error->message}}
+                );
+            }
+            loaded.asset = provenance.asset;
+            const adapters::GlbToFbxConversionReport& report = *converted.report;
+            Json result{
+                {"schema", "unified3d.glb-to-fbx-conversion/1.0-draft"},
+                {"source_asset", encode_asset(*source_asset)},
+                {"converted_asset", encode_asset(*loaded.asset)},
+                {"report", Json{
+                    {"source_path", report.source_path.generic_string()},
+                    {"output_path", report.output_path.generic_string()},
+                    {"source_size_bytes", report.source_size_bytes},
+                    {"output_size_bytes", report.output_size_bytes},
+                    {"mesh_count", report.mesh_count},
+                    {"primitive_count", report.primitive_count},
+                    {"control_point_count", report.control_point_count},
+                    {"triangle_count", report.triangle_count},
+                    {"material_count", report.material_count},
+                    {"texture_count", report.texture_count},
+                    {"embedded_media_count", report.embedded_media_count},
+                    {"geometry_preserved", report.geometry_preserved},
+                    {"media_embedded", report.media_embedded},
+                }},
+            };
+            return notification ? std::nullopt : std::optional<Json>{result_response(id, std::move(result))};
+        }
+
+        if (method == "asset.normalize_spatial") {
+            if (!params.is_object() || !params.contains("asset")
+                || !params.contains("output_path") || !params["output_path"].is_string()
+                || params["output_path"].get_ref<const std::string&>().empty()) {
+                return fail_request(
+                    -32602,
+                    "Invalid params",
+                    Json{{"required", Json::array({"asset", "output_path"})}}
+                );
+            }
+            const auto handle = decode_asset_handle(params["asset"]);
+            if (!handle.has_value()) {
+                return fail_request(-32602, "Invalid params", Json{{"field", "asset"}});
+            }
+            const auto source_asset = assets.find(*handle);
+            if (!source_asset.has_value()) {
+                return fail_request(
+                    -32020,
+                    "Invalid asset handle",
+                    Json{{"code", "STALE_HANDLE"}}
+                );
+            }
+            if (source_asset->container != analysis::AssetContainer::glb) {
+                return fail_request(
+                    -32030,
+                    "Spatial normalization requires a GLB asset",
+                    Json{{"container", asset_container_name(source_asset->container)}}
+                );
+            }
+
+            GlbSpatialNormalizationOptions options;
+            if (params.contains("expected_position_height_m")) {
+                if (params["expected_position_height_m"].is_null()) {
+                    options.expected_position_height_m = std::nullopt;
+                } else if (params["expected_position_height_m"].is_number()) {
+                    options.expected_position_height_m =
+                        params["expected_position_height_m"].get<double>();
+                } else {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "expected_position_height_m"}});
+                }
+            }
+            if (params.contains("height_tolerance_m")) {
+                if (!params["height_tolerance_m"].is_number()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "height_tolerance_m"}});
+                }
+                options.height_tolerance_m = params["height_tolerance_m"].get<double>();
+            }
+            if (params.contains("correct_scale_factor")) {
+                if (!params["correct_scale_factor"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "correct_scale_factor"}});
+                }
+                options.correct_scale_factor = params["correct_scale_factor"].get<bool>();
+            }
+            if (params.contains("remove_emissive_channel")) {
+                if (!params["remove_emissive_channel"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "remove_emissive_channel"}});
+                }
+                options.remove_emissive_channel = params["remove_emissive_channel"].get<bool>();
+            }
+            if (params.contains("remove_head_helper_bones")) {
+                if (!params["remove_head_helper_bones"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "remove_head_helper_bones"}});
+                }
+                options.remove_head_helper_bones = params["remove_head_helper_bones"].get<bool>();
+            }
+            if (params.contains("remove_animations")) {
+                if (!params["remove_animations"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "remove_animations"}});
+                }
+                options.remove_animations = params["remove_animations"].get<bool>();
+            }
+            if (params.contains("overwrite")) {
+                if (!params["overwrite"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "overwrite"}});
+                }
+                options.overwrite = params["overwrite"].get<bool>();
+            }
+            const std::filesystem::path output_path = path_from_utf8(
+                params["output_path"].get<std::string>()
+            );
+            const GlbSpatialNormalizationResult normalized = normalize_mixed_unit_rig_glb(
+                source_asset->canonical_path, output_path, options
+            );
+            if (!normalized.success()) {
+                return fail_request(
+                    -32031,
+                    "GLB spatial normalization failed",
+                    Json{{"diagnostics", json_codec::encode_diagnostics(normalized.diagnostics)}}
+                );
+            }
+
+            auto loaded = assets.load(normalized.report->output_path, "cgltf");
+            if (!loaded.success()) {
+                return fail_request(
+                    -32032,
+                    "Normalized GLB registration failed",
+                    Json{{"code", loaded.error->code}, {"detail", loaded.error->message}}
+                );
+            }
+            if (!loaded.reused) {
+                adapters::DecodeResult decoded = adapters::decode_asset_buffers(
+                    loaded.asset->canonical_path, adapters::AdapterBackend::cgltf
+                );
+                if (!decoded.success()) {
+                    static_cast<void>(assets.release(loaded.asset->handle));
+                    return fail_request(
+                        -32033,
+                        "Normalized GLB validation failed",
+                        Json{{"diagnostics", json_codec::encode_diagnostics(decoded.diagnostics)}}
+                    );
+                }
+                RegisterBuffersResult registered = assets.register_buffers(
+                    loaded.asset->handle, std::move(*decoded.asset)
+                );
+                if (!registered.success()) {
+                    static_cast<void>(assets.release(loaded.asset->handle));
+                    return fail_request(
+                        -32034,
+                        "Normalized GLB buffer registration failed",
+                        Json{{"code", registered.error->code}, {"detail", registered.error->message}}
+                    );
+                }
+                loaded.asset = std::move(registered.asset);
+            }
+            const auto provenance = assets.update_provenance(
+                loaded.asset->handle,
+                ProvenanceRecord{
+                    .producer = "asset.normalize_spatial",
+                    .operation_id = "normalize-spatial:" + assets.session_id() + ":"
+                        + std::to_string(loaded.asset->handle.identity.generation) + ":"
+                        + std::to_string(loaded.asset->handle.identity.object_id),
+                    .source_uri = normalized.report->output_path.generic_string(),
+                    .source_revision = std::nullopt,
+                    .parents = {source_asset->handle},
+                }
+            );
+            if (!provenance.success()) {
+                static_cast<void>(assets.release(loaded.asset->handle));
+                return fail_request(
+                    -32035,
+                    "Normalized GLB provenance registration failed",
+                    Json{{"code", provenance.error->code}, {"detail", provenance.error->message}}
+                );
+            }
+            loaded.asset = provenance.asset;
+            const GlbSpatialNormalizationReport& report = *normalized.report;
+            Json result{
+                {"schema", "unified3d.spatial-normalization/1.0-draft"},
+                {"source_asset", encode_asset(*source_asset)},
+                {"normalized_asset", encode_asset(*loaded.asset)},
+                {"report", Json{
+                    {"source_path", report.source_path.generic_string()},
+                    {"output_path", report.output_path.generic_string()},
+                    {"source_size_bytes", report.source_size_bytes},
+                    {"output_size_bytes", report.output_size_bytes},
+                    {"root_node_index", report.root_node_index},
+                    {"root_node_name", report.root_node_name},
+                    {"absorbed_uniform_scale", report.absorbed_uniform_scale},
+                    {"position_height_m", report.position_height_m},
+                    {"modified_node_translation_count", report.modified_node_translation_count},
+                    {"modified_animation_accessor_count", report.modified_animation_accessor_count},
+                    {"modified_inverse_bind_matrix_count", report.modified_inverse_bind_matrix_count},
+                    {"removed_emissive_texture_count", report.removed_emissive_texture_count},
+                    {"zeroed_emissive_factor_count", report.zeroed_emissive_factor_count},
+                    {"removed_head_helper_node_count", report.removed_head_helper_node_count},
+                    {"removed_head_helper_joint_count", report.removed_head_helper_joint_count},
+                    {"removed_head_helper_animation_channel_count", report.removed_head_helper_animation_channel_count},
+                    {"removed_animation_clip_count", report.removed_animation_clip_count},
+                    {"removed_animation_channel_count", report.removed_animation_channel_count},
+                    {"removed_animation_sampler_count", report.removed_animation_sampler_count},
+                    {"scale_correction_applied", report.scale_correction_applied},
+                    {"emissive_correction_applied", report.emissive_correction_applied},
+                    {"head_helper_bone_removal_applied", report.head_helper_bone_removal_applied},
+                    {"animation_removal_applied", report.animation_removal_applied},
+                }},
+            };
+            return notification ? std::nullopt : std::optional<Json>{result_response(id, std::move(result))};
+        }
+
+        if (method == "skin.transfer") {
+            if (!params.is_object() || !params.contains("source") || !params.contains("target")) {
+                return fail_request(
+                    -32602,
+                    "Invalid params",
+                    Json{{"required", Json::array({"source", "target"})}}
+                );
+            }
+            const auto source_handle = decode_asset_handle(params["source"]);
+            const auto target_handle = decode_asset_handle(params["target"]);
+            if (!source_handle || !target_handle || *source_handle == *target_handle) {
+                return fail_request(
+                    -32602,
+                    "Invalid params",
+                    Json{{"detail", "source and target must be distinct live 3D asset handles"}}
+                );
+            }
+            geometry::SpatialSkinTransferOptions options;
+            options.maximum_distance_m = 0.05;
+            bool replace_existing = false;
+            if (params.contains("quality")) {
+                if (!params["quality"].is_string()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "quality"}});
+                }
+                const std::string quality = params["quality"].get<std::string>();
+                if (quality == "fast") options.quality = geometry::SpatialTransferQuality::fast;
+                else if (quality == "balanced") options.quality = geometry::SpatialTransferQuality::balanced;
+                else if (quality == "precise") options.quality = geometry::SpatialTransferQuality::precise;
+                else if (quality == "diagnostic") options.quality = geometry::SpatialTransferQuality::diagnostic;
+                else return fail_request(-32602, "Invalid params", Json{{"field", "quality"}});
+            }
+            if (params.contains("maximum_influences")) {
+                if (!params["maximum_influences"].is_number_unsigned()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "maximum_influences"}});
+                }
+                options.maximum_influences = params["maximum_influences"].get<std::uint32_t>();
+            }
+            if (params.contains("minimum_weight")) {
+                if (!params["minimum_weight"].is_number()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "minimum_weight"}});
+                }
+                options.minimum_weight = params["minimum_weight"].get<double>();
+            }
+            if (params.contains("maximum_distance_m")) {
+                if (params["maximum_distance_m"].is_null()) {
+                    options.maximum_distance_m = std::nullopt;
+                } else if (params["maximum_distance_m"].is_number()) {
+                    options.maximum_distance_m = params["maximum_distance_m"].get<double>();
+                } else {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "maximum_distance_m"}});
+                }
+            }
+            if (params.contains("replace_existing")) {
+                if (!params["replace_existing"].is_boolean()) {
+                    return fail_request(-32602, "Invalid params", Json{{"field", "replace_existing"}});
+                }
+                replace_existing = params["replace_existing"].get<bool>();
+            }
+            const auto source_asset = assets.find(*source_handle);
+            const auto target_asset = assets.find(*target_handle);
+            if (!source_asset || !target_asset) {
+                return fail_request(-32020, "Invalid asset handle", Json{{"code", "STALE_HANDLE"}});
+            }
+            if (source_asset->joint_names.empty()) {
+                return fail_request(
+                    -32040,
+                    "Skin donor has no joint table",
+                    Json{{"source", source_asset->handle.encode()}}
+                );
+            }
+            const ResolveBuffersResult source_buffers = assets.resolve_buffers(*source_handle);
+            const ResolveBuffersResult target_buffers = assets.resolve_buffers(*target_handle);
+            if (!source_buffers.success() || !target_buffers.success()) {
+                return fail_request(
+                    -32041,
+                    "Runtime geometry buffers could not be resolved",
+                    Json{{"source_error", source_buffers.error ? Json(source_buffers.error->code) : Json(nullptr)},
+                         {"target_error", target_buffers.error ? Json(target_buffers.error->code) : Json(nullptr)}}
+                );
+            }
+            std::vector<geometry::SpatialPrimitiveInput> source_inputs;
+            std::vector<geometry::SpatialPrimitiveInput> target_inputs;
+            source_inputs.reserve(source_buffers.buffers->primitives.size());
+            target_inputs.reserve(target_buffers.buffers->primitives.size());
+            for (const adapters::DecodedPrimitive& primitive : source_buffers.buffers->primitives) {
+                source_inputs.push_back({&primitive.buffers, primitive.local_to_world});
+            }
+            for (const adapters::DecodedPrimitive& primitive : target_buffers.buffers->primitives) {
+                target_inputs.push_back({&primitive.buffers, primitive.local_to_world});
+            }
+            geometry::SpatialSkinTransferResult transferred =
+                geometry::transfer_skin_weights_spatially(source_inputs, target_inputs, options);
+            if (!transferred.success()) {
+                return fail_request(
+                    -32042,
+                    "Spatial skin transfer failed",
+                    Json{{"diagnostics", json_codec::encode_diagnostics(transferred.diagnostics)}}
+                );
+            }
+            RegisterBuffersResult registered = assets.register_transferred_skin(
+                *target_handle,
+                *source_handle,
+                source_asset->joint_names,
+                std::move(transferred.primitives),
+                replace_existing
+            );
+            if (!registered.success()) {
+                return fail_request(
+                    -32043,
+                    "Transferred skin resource registration failed",
+                    Json{{"code", registered.error->code}, {"detail", registered.error->message}}
+                );
+            }
+            const geometry::SpatialSkinTransferReport& report = *transferred.report;
+            Json samples = Json::array();
+            for (const geometry::SpatialMappingSample& sample : report.diagnostic_samples) {
+                samples.push_back(Json{
+                    {"target_vertex", sample.target_vertex},
+                    {"source_triangle", sample.source_triangle},
+                    {"barycentric", sample.barycentric},
+                    {"distance_m", sample.distance_m},
+                });
+            }
+            Json result{
+                {"schema", "unified3d.skin-transfer/1.0-draft"},
+                {"method", "spatial_surface"},
+                {"source_asset", encode_asset(*source_asset)},
+                {"target_asset", encode_asset(*registered.asset)},
+                {"report", Json{
+                    {"source_triangle_count", report.source_triangle_count},
+                    {"target_vertex_count", report.target_vertex_count},
+                    {"matched_vertex_count", report.matched_vertex_count},
+                    {"rejected_vertex_count", report.rejected_vertex_count},
+                    {"mean_distance_m", report.mean_distance_m},
+                    {"maximum_distance_m", report.maximum_distance_m},
+                    {"output_max_influences", report.output_max_influences},
+                    {"diagnostic_samples", std::move(samples)},
+                }},
             };
             return notification ? std::nullopt : std::optional<Json>{result_response(id, std::move(result))};
         }

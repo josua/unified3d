@@ -20,6 +20,7 @@ add_library(
     STATIC
         src/adapter_registry.cpp
         src/fbx/ufbx_adapter.cpp
+        src/fbx/glb_to_fbx_converter.cpp
         src/gltf/cgltf_adapter.cpp
         $<TARGET_OBJECTS:unified3d-ufbx-object>
         $<TARGET_OBJECTS:unified3d-cgltf-object>

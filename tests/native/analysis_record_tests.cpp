@@ -1,15 +1,22 @@
 #include <unified3d/core/analysis/analysis_record.hpp>
 #include <unified3d/core/geometry/buffers.hpp>
+#include <unified3d/core/geometry/canonical_fingerprint.hpp>
+#include <unified3d/core/geometry/spatial_skin_transfer.hpp>
 #include <unified3d/operations/analysis/compare_analysis_records.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <initializer_list>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <span>
 #include <vector>
 
 namespace {
@@ -28,6 +35,7 @@ using unified3d::operations::analysis::ComparisonLevelStatus;
 using unified3d::operations::analysis::InputSide;
 using unified3d::geometry::BufferView;
 using unified3d::geometry::IndexBuffer;
+using unified3d::geometry::PrimitiveBuffers;
 using unified3d::geometry::ScalarType;
 using unified3d::geometry::SkinInfluenceSet;
 using unified3d::geometry::SkinTransferBuffers;
@@ -344,6 +352,95 @@ std::shared_ptr<const std::vector<std::byte>> bytes(const std::size_t size) {
     return std::make_shared<const std::vector<std::byte>>(size);
 }
 
+template <typename T>
+std::shared_ptr<const std::vector<std::byte>> value_bytes(
+    const std::initializer_list<T> values
+) {
+    auto storage = std::make_shared<std::vector<std::byte>>(values.size() * sizeof(T));
+    std::memcpy(storage->data(), values.begin(), storage->size());
+    return storage;
+}
+
+template <typename T>
+std::shared_ptr<const std::vector<std::byte>> value_bytes(
+    const std::vector<T>& values
+) {
+    auto storage = std::make_shared<std::vector<std::byte>>(values.size() * sizeof(T));
+    if (!values.empty()) std::memcpy(storage->data(), values.data(), storage->size());
+    return storage;
+}
+
+PrimitiveBuffers fingerprint_primitive(
+    const std::initializer_list<float> positions,
+    const std::initializer_list<std::uint32_t> indices
+) {
+    return PrimitiveBuffers{
+        .positions = VertexAttributeBuffer{
+            .semantic = VertexSemantic::position,
+            .view = BufferView{
+                .storage = value_bytes(positions),
+                .element_count = positions.size() / 3U,
+                .component_count = 3U,
+                .scalar_type = ScalarType::float32,
+            },
+        },
+        .indices = IndexBuffer{BufferView{
+            .storage = value_bytes(indices),
+            .element_count = indices.size(),
+            .component_count = 1U,
+            .scalar_type = ScalarType::uint32,
+        }},
+    };
+}
+
+void canonical_fingerprint_tests() {
+    const PrimitiveBuffers first = fingerprint_primitive(
+        {
+            0.0F, 0.0F, 0.0F,
+            1.0F, 0.0F, 0.0F,
+            0.0F, 1.0F, 0.0F,
+            1.0F, 1.0F, 0.0F,
+        },
+        {0U, 1U, 2U, 1U, 3U, 2U}
+    );
+    const PrimitiveBuffers reordered = fingerprint_primitive(
+        {
+            1.0F, 1.0F, 0.0F,
+            0.0F, 1.0F, 0.0F,
+            1.0F, 0.0F, 0.0F,
+            0.0F, 0.0F, 0.0F,
+        },
+        {1U, 0U, 2U, 1U, 2U, 3U}
+    );
+    const PrimitiveBuffers changed = fingerprint_primitive(
+        {
+            1.0F, 1.1F, 0.0F,
+            0.0F, 1.0F, 0.0F,
+            1.0F, 0.0F, 0.0F,
+            0.0F, 0.0F, 0.0F,
+        },
+        {1U, 0U, 2U, 1U, 2U, 3U}
+    );
+    const auto a = unified3d::geometry::fingerprint_triangle_position_soup(
+        std::span<const PrimitiveBuffers>{&first, 1U}
+    );
+    const auto b = unified3d::geometry::fingerprint_triangle_position_soup(
+        std::span<const PrimitiveBuffers>{&reordered, 1U}
+    );
+    const auto c = unified3d::geometry::fingerprint_triangle_position_soup(
+        std::span<const PrimitiveBuffers>{&changed, 1U}
+    );
+    expect(a.success() && b.success() && c.success(), "canonical fingerprints must compute");
+    expect(
+        a.fingerprint->digest == b.fingerprint->digest,
+        "canonical fingerprint must ignore vertex order, triangle order, and winding"
+    );
+    expect(
+        a.fingerprint->digest != c.fingerprint->digest,
+        "canonical fingerprint must detect a geometric position change"
+    );
+}
+
 void geometry_buffer_tests() {
     const VertexAttributeBuffer positions{
         .semantic = VertexSemantic::position,
@@ -418,6 +515,69 @@ void geometry_buffer_tests() {
     );
 }
 
+void spatial_skin_transfer_tests() {
+    const std::vector<float> positions{
+        0.0F, 0.0F, 0.0F,
+        1.0F, 0.0F, 0.0F,
+        0.0F, 1.0F, 0.0F,
+    };
+    const std::vector<std::uint32_t> indices{0U, 1U, 2U};
+    const std::vector<std::uint32_t> joints{
+        0U, 0U, 0U, 0U,
+        1U, 0U, 0U, 0U,
+        2U, 0U, 0U, 0U,
+    };
+    const std::vector<float> weights{
+        1.0F, 0.0F, 0.0F, 0.0F,
+        1.0F, 0.0F, 0.0F, 0.0F,
+        1.0F, 0.0F, 0.0F, 0.0F,
+    };
+    PrimitiveBuffers source{
+        .positions = {VertexSemantic::position, {value_bytes(positions), 0U, 0U, 3U, 3U, ScalarType::float32}},
+        .indices = IndexBuffer{{value_bytes(indices), 0U, 0U, 3U, 1U, ScalarType::uint32}},
+        .influence_sets = {{
+            .joints = {VertexSemantic::joints, {value_bytes(joints), 0U, 0U, 3U, 4U, ScalarType::uint32}},
+            .weights = {VertexSemantic::weights, {value_bytes(weights), 0U, 0U, 3U, 4U, ScalarType::float32}},
+        }},
+        .max_influences = 1U,
+    };
+    const std::vector<float> target_positions{1.0F / 3.0F, 1.0F / 3.0F, 0.01F};
+    PrimitiveBuffers target{
+        .positions = {VertexSemantic::position, {value_bytes(target_positions), 0U, 0U, 1U, 3U, ScalarType::float32}},
+    };
+    const std::array source_inputs{
+        unified3d::geometry::SpatialPrimitiveInput{.buffers = &source},
+    };
+    const std::array target_inputs{
+        unified3d::geometry::SpatialPrimitiveInput{.buffers = &target},
+    };
+    const auto transferred = unified3d::geometry::transfer_skin_weights_spatially(
+        source_inputs,
+        target_inputs,
+        {.quality = unified3d::geometry::SpatialTransferQuality::diagnostic,
+         .maximum_influences = 4U,
+         .minimum_weight = 1.0e-8,
+         .maximum_distance_m = 0.02}
+    );
+    expect(transferred.success(), "spatial barycentric skin transfer must succeed");
+    expect(transferred.report->matched_vertex_count == 1U, "target vertex must match donor triangle");
+    expect_near(transferred.report->maximum_distance_m, 0.01, 1.0e-6, "surface distance must be measured in world meters");
+    expect(transferred.primitives[0].max_influences == 3U, "three barycentric corner joints must survive");
+    const auto& output = transferred.primitives[0].influence_sets[0];
+    std::array<float, 4> output_weights{};
+    std::memcpy(output_weights.data(), output.weights.view.storage->data(), sizeof(output_weights));
+    expect_near(output_weights[0], 1.0 / 3.0, 1.0e-6, "first interpolated weight must normalize");
+    expect_near(output_weights[1], 1.0 / 3.0, 1.0e-6, "second interpolated weight must normalize");
+    expect_near(output_weights[2], 1.0 / 3.0, 1.0e-6, "third interpolated weight must normalize");
+
+    const auto rejected = unified3d::geometry::transfer_skin_weights_spatially(
+        source_inputs,
+        target_inputs,
+        {.maximum_distance_m = 0.001}
+    );
+    expect(!rejected.success(), "distance policy must reject unrelated target geometry");
+}
+
 }  // namespace
 
 int main() {
@@ -425,6 +585,8 @@ int main() {
     comparison_parity_tests();
     failure_propagation_test();
     geometry_buffer_tests();
+    canonical_fingerprint_tests();
+    spatial_skin_transfer_tests();
 
     if (failures != 0) {
         std::cerr << failures << " native test(s) failed.\n";

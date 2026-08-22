@@ -12,6 +12,8 @@
 #include <unified3d/adapters/asset_format_adapter.hpp>
 #include <unified3d/core/analysis/analysis_record.hpp>
 #include <unified3d/core/geometry/buffers.hpp>
+#include <unified3d/core/geometry/canonical_fingerprint.hpp>
+#include <unified3d/core/geometry/spatial_skin_transfer.hpp>
 
 namespace unified3d::runtime {
 
@@ -118,6 +120,7 @@ struct AssetResource {
     double buffer_unit_meters{};
     std::vector<std::string> joint_names;
     std::vector<PrimitiveResourceSet> primitives;
+    std::optional<geometry::CanonicalGeometryFingerprint> canonical_geometry_fingerprint;
     ProvenanceRecord provenance;
 };
 
@@ -149,6 +152,20 @@ struct RegisterBuffersResult {
     [[nodiscard]] bool success() const noexcept;
 };
 
+struct UpdateAssetProvenanceResult {
+    std::optional<AssetResource> asset;
+    std::optional<RegistryError> error;
+
+    [[nodiscard]] bool success() const noexcept;
+};
+
+struct ResolveBuffersResult {
+    std::optional<adapters::DecodedAssetBuffers> buffers;
+    std::optional<RegistryError> error;
+
+    [[nodiscard]] bool success() const noexcept;
+};
+
 class AssetRegistry final {
 public:
     AssetRegistry();
@@ -170,6 +187,18 @@ public:
     [[nodiscard]] RegisterBuffersResult register_buffers(
         const AssetHandle& owner,
         adapters::DecodedAssetBuffers decoded
+    );
+    [[nodiscard]] UpdateAssetProvenanceResult update_provenance(
+        const AssetHandle& owner,
+        ProvenanceRecord provenance
+    );
+    [[nodiscard]] ResolveBuffersResult resolve_buffers(const AssetHandle& owner) const;
+    [[nodiscard]] RegisterBuffersResult register_transferred_skin(
+        const AssetHandle& target,
+        const AssetHandle& source,
+        std::vector<std::string> joint_names,
+        std::vector<geometry::TransferredPrimitiveSkin> primitives,
+        bool replace_existing = false
     );
     [[nodiscard]] ReleaseAssetResult release(const AssetHandle& handle);
     [[nodiscard]] std::optional<AssetResource> find(const AssetHandle& handle) const;

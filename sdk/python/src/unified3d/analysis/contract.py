@@ -72,6 +72,16 @@ def _presence(count: int | None) -> bool | None:
     return count > 0
 
 
+def _canonical_bounds(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    minimum = value.get("min")
+    maximum = value.get("max")
+    if not isinstance(minimum, list) or not isinstance(maximum, list):
+        return None
+    return {"min": deepcopy(minimum), "max": deepcopy(maximum)}
+
+
 def _signature(normalized: dict[str, Any]) -> dict[str, str] | None:
     digest = normalized.get("topology_signature")
     algorithm = normalized.get("topology_signature_kind")
@@ -166,6 +176,12 @@ def canonicalize_analysis(value: str | dict[str, Any] | AnalysisRecord) -> Analy
             {
                 "draco_compressed": normalized.get("draco"),
                 "meshopt_compressed": normalized.get("meshopt"),
+                "animation": deepcopy(source.get("animation"))
+                if source and isinstance(source.get("animation"), dict)
+                else None,
+                "spatial": deepcopy(source.get("spatial"))
+                if source and isinstance(source.get("spatial"), dict)
+                else None,
             }
         )
     if kind == "FBX":
@@ -173,8 +189,18 @@ def canonicalize_analysis(value: str | dict[str, Any] | AnalysisRecord) -> Analy
             {
                 "polygon_vertex_count": normalized.get("polygon_vertex_count"),
                 "polygon_count": normalized.get("polygon_count"),
+                "animation": deepcopy(source.get("animation"))
+                if source and isinstance(source.get("animation"), dict)
+                else None,
+                "spatial": deepcopy(source.get("scene"))
+                if source and isinstance(source.get("scene"), dict)
+                else None,
             }
         )
+
+    normalized_coordinates = normalized.get("coordinate_system")
+    if not isinstance(normalized_coordinates, dict):
+        normalized_coordinates = {}
 
     record = cast(
         AnalysisRecordDict,
@@ -202,18 +228,18 @@ def canonicalize_analysis(value: str | dict[str, Any] | AnalysisRecord) -> Analy
                     else None
                 ),
                 "coordinate_system": {
-                    "handedness": None,
-                    "up_axis": None,
-                    "forward_axis": None,
-                    "unit": None,
-                    "meters_per_unit": None,
+                    "handedness": normalized_coordinates.get("handedness"),
+                    "up_axis": normalized_coordinates.get("up_axis"),
+                    "forward_axis": normalized_coordinates.get("forward_axis"),
+                    "unit": normalized_coordinates.get("unit"),
+                    "meters_per_unit": normalized_coordinates.get("meters_per_unit"),
                 },
             },
             "scene": {
                 "scene_count": None,
                 "node_count": None,
                 "mesh_instance_count": normalized.get("mesh_instance_count"),
-                "bounds": None,
+                "bounds": _canonical_bounds(normalized.get("node_transformed_bounds")),
             },
             "geometry": {
                 "mesh_count": normalized.get("mesh_count"),
@@ -232,7 +258,7 @@ def canonicalize_analysis(value: str | dict[str, Any] | AnalysisRecord) -> Analy
                 "normal_count": None,
                 "tangent_count": None,
                 "color_attribute_count": None,
-                "bounds": None,
+                "bounds": _canonical_bounds(normalized.get("bounds")),
                 "topology_signature": _signature(normalized),
             },
             "materials": {
@@ -263,9 +289,9 @@ def canonicalize_analysis(value: str | dict[str, Any] | AnalysisRecord) -> Analy
             "animation": {
                 "present": _presence(animation_count),
                 "clip_count": animation_count,
-                "channel_count": None,
-                "sampler_count": None,
-                "duration_seconds": None,
+                "channel_count": normalized.get("animation_channel_count"),
+                "sampler_count": normalized.get("animation_sampler_count"),
+                "duration_seconds": normalized.get("animation_duration_seconds"),
             },
             "native": native,
             "diagnostics": diagnostics,

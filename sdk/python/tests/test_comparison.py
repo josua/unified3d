@@ -169,6 +169,83 @@ class NormalizationTests(unittest.TestCase):
 
 
 class ComparatorTests(unittest.TestCase):
+    def test_recognizes_effective_clips_and_cross_format_topology_candidate(self):
+        fbx = json.loads(fbx_json())
+        glb = json.loads(glb_json())
+        fbx["geometry"].update(
+            {
+                "mesh_count": 1,
+                "control_point_count": 54707,
+                "polygon_vertex_count": 328737,
+                "polygon_count": 109579,
+                "triangle_count": 109579,
+            }
+        )
+        fbx["animation"] = {
+            "animation_stack_count": 3,
+            "raw_animation_stack_count": 3,
+            "effective_clip_count": 2,
+            "technical_stack_count": 1,
+            "duplicate_stack_count": 0,
+            "stack_names": ["Running", "Walking", "Character_output.fbx"],
+            "effective_clip_names": ["Running", "Walking"],
+        }
+        fbx["scene"] = {
+            "handedness": "right",
+            "up_axis": "Y",
+            "front_axis": "-Z",
+            "meters_per_unit": 0.01,
+            "local_bounding_box": {"min": [-50, 0, -25], "max": [50, 170, 25]},
+            "world_bounding_box": {"min": [-0.5, 0, -0.25], "max": [0.5, 1.7, 0.25]},
+        }
+        glb["geometry"].update(
+            {
+                "mesh_count": 1,
+                "render_vertex_count": 85313,
+                "unique_position_tuple_count": 54707,
+                "explicit_index_count": 328737,
+                "triangle_count": 109579,
+            }
+        )
+        glb["animation"] = {
+            "raw_animation_count": 2,
+            "animation_count": 2,
+            "effective_clip_count": 2,
+            "technical_clip_count": 0,
+            "duplicate_clip_count": 0,
+            "clip_names": ["Running", "Walking"],
+            "effective_clip_names": ["Running", "Walking"],
+            "channel_count": 48,
+            "sampler_count": 48,
+            "duration_seconds": 2.0,
+        }
+        glb["spatial"] = {
+            "coordinate_system": {
+                "handedness": "right",
+                "up_axis": "Y",
+                "forward_axis": "-Z",
+                "unit": "meter",
+                "meters_per_unit": 1,
+            },
+            "position_bounds": {"min": [-0.5, 0, -0.25], "max": [0.5, 1.7, 0.25]},
+            "node_transformed_bounds": {
+                "min": [-0.005, 0, -0.0025],
+                "max": [0.005, 0.017, 0.0025],
+            },
+        }
+
+        result = compare_analyses(fbx, glb)
+        candidate = result.comparison["cross_format_topology_candidate"]
+
+        self.assertTrue(candidate["detected"])
+        self.assertEqual(candidate["strength"], "strong_candidate_not_proven")
+        self.assertEqual(result.input_a["animation_count"], 2)
+        self.assertEqual(result.input_a["raw_animation_count"], 3)
+        self.assertIn("2 effectif(s) (3 brut(s))", result.comparison_markdown)
+        self.assertIn("Même nombre de triangles", result.interpreted_markdown)
+        self.assertIn("Même ensemble de clips effectifs : Running, Walking", result.interpreted_markdown)
+        self.assertIn("évaluer le bind pose", result.interpreted_markdown)
+
     def test_compares_json_and_generates_markdown(self):
         result = compare_analyses(fbx_json(), glb_json())
         markdown = result.comparison_markdown
@@ -222,12 +299,130 @@ class ComparatorTests(unittest.TestCase):
         self.assertIn("| Propriété | FBX animé | GLB haute définition |", interpreted)
         self.assertIn("| Maillages | 10 | 10 |", interpreted)
 
-    def test_specialized_interpretation_requires_fbx_and_glb(self):
-        interpreted = compare_analyses(
-            FBX_SUMMARY, FBX_SUMMARY
-        ).interpreted_markdown
+    def test_specialized_interpretation_compares_two_fbx_files(self):
+        converted = (
+            FBX_SUMMARY.replace("thief-walking.fbx", "thief-converted.fbx")
+            .replace("Control Points: 27311", "Control Points: 27312")
+            .replace("Polygon Vertices: 150177", "Polygon Vertices: 150180")
+            .replace("Polygons: 50059", "Polygons: 50060")
+            .replace("Triangles (fan-equivalent): 50059", "Triangles (fan-equivalent): 50060")
+            .replace("fd17e9faa2426bc8", "converted-signature")
+        )
 
-        self.assertIn("Interprétation spécialisée indisponible", interpreted)
+        interpreted = compare_analyses(FBX_SUMMARY, converted).interpreted_markdown
+
+        self.assertIn("# Comparaison principale", interpreted)
+        self.assertIn("**Mode : FBX ↔ FBX**", interpreted)
+        self.assertIn("| Propriété | FBX A | FBX B | Interprétation |", interpreted)
+        self.assertIn("| Control points | 27\u202f311 | 27\u202f312 |", interpreted)
+        self.assertIn("Écart B − A : +1", interpreted)
+        self.assertIn("Topologies différentes", interpreted)
+        self.assertNotIn("Interprétation spécialisée indisponible", interpreted)
+
+    def test_compares_two_glbs_with_decimation_and_texture_inventory(self):
+        source = json.loads(glb_json())
+        decimated = json.loads(glb_json())
+        source["asset"].update(
+            {"path": "C:\\assets\\goblin-2m.glb", "size_bytes": 117806172}
+        )
+        source["geometry"].update(
+            {
+                "mesh_count": 16,
+                "mesh_instance_count": 16,
+                "primitive_count": 16,
+                "render_vertex_count": 1047168,
+                "unique_position_tuple_count": 968570,
+                "explicit_index_count": 5777619,
+                "triangle_count": 1925873,
+                "signatures": {"decoded_topology_sha256": "source-signature"},
+            }
+        )
+        source["materials"] = {
+            "material_count": 16,
+            "texture_count": 48,
+            "image_count": 48,
+            "texture_encoded_bytes": 65169250,
+            "texture_max_width": 4096,
+            "texture_max_height": 4096,
+            "texture_resolution_counts": {
+                "4096x4096": 6,
+                "2048x2048": 21,
+                "1024x1024": 21,
+            },
+        }
+        source["spatial"] = {
+            "node_transformed_bounds": {
+                "min": [-0.4, 0.0, -0.2],
+                "max": [0.4, 0.84830597, 0.2],
+            }
+        }
+
+        decimated["asset"].update(
+            {"path": "C:\\assets\\goblin-150k.glb", "size_bytes": 33452216}
+        )
+        decimated["geometry"].update(
+            {
+                "mesh_count": 16,
+                "mesh_instance_count": 16,
+                "primitive_count": 16,
+                "render_vertex_count": 104386,
+                "unique_position_tuple_count": 78968,
+                "explicit_index_count": 449973,
+                "triangle_count": 149991,
+                "signatures": {"decoded_topology_sha256": "decimated-signature"},
+            }
+        )
+        decimated["materials"] = {
+            "material_count": 16,
+            "texture_count": 48,
+            "image_count": 48,
+            "texture_encoded_bytes": 29185302,
+            "texture_max_width": 4096,
+            "texture_max_height": 4096,
+            "texture_resolution_counts": {
+                "4096x4096": 2,
+                "2048x2048": 9,
+                "1024x1024": 16,
+                "512x512": 14,
+                "256x256": 7,
+            },
+        }
+        decimated["spatial"] = {
+            "node_transformed_bounds": {
+                "min": [-0.4, 0.0, -0.2],
+                "max": [0.4, 0.862941474, 0.2],
+            }
+        }
+
+        result = compare_analyses(source, decimated)
+        interpreted = result.interpreted_markdown
+
+        self.assertIn("# Comparaison GLB → GLB", interpreted)
+        self.assertIn("goblin-2m.glb", interpreted)
+        self.assertIn("goblin-150k.glb", interpreted)
+        self.assertIn("1\u202f925\u202f873", interpreted)
+        self.assertIn("149\u202f991", interpreted)
+        self.assertIn("7,79 % conservés", interpreted)
+        self.assertIn("4096x4096 × 6", interpreted)
+        self.assertIn("256x256 × 7", interpreted)
+        self.assertIn("ce n’est pas une texture 2K uniforme", interpreted)
+        self.assertIn("Topologie reconstruite", interpreted)
+        self.assertTrue(result.comparison["topology_signatures_comparable"])
+        self.assertFalse(result.comparison["topology_signature_match"])
+        self.assertTrue(result.comparison["glb_pair"]["detected"])
+        self.assertEqual(result.comparison["glb_pair"]["denser_input"], "a")
+        self.assertAlmostEqual(
+            result.comparison["glb_pair"]["retained_triangle_percent"],
+            7.788,
+            places=3,
+        )
+        texture_inventory = result.comparison["glb_pair"]["texture_inventory"]
+        self.assertTrue(texture_inventory["available"])
+        self.assertEqual(texture_inventory["b"]["resolution_counts"]["256x256"], 7)
+        self.assertAlmostEqual(
+            texture_inventory["encoded_byte_ratio_b_over_a"],
+            29185302 / 65169250,
+        )
 
     def test_to_dict_returns_isolated_data(self):
         result = compare_analyses(fbx_json(), glb_json())

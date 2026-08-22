@@ -147,6 +147,14 @@ bool RegisterBuffersResult::success() const noexcept {
     return asset.has_value() && !error.has_value();
 }
 
+bool UpdateAssetProvenanceResult::success() const noexcept {
+    return asset.has_value() && !error.has_value();
+}
+
+bool ResolveBuffersResult::success() const noexcept {
+    return buffers.has_value() && !error.has_value();
+}
+
 AssetRegistry::AssetRegistry() : AssetRegistry(make_session_id()) {}
 
 AssetRegistry::AssetRegistry(std::string session_id)
@@ -258,6 +266,7 @@ LoadAssetResult AssetRegistry::load(
         .buffer_unit_meters = 0.0,
         .joint_names = {},
         .primitives = {},
+        .canonical_geometry_fingerprint = std::nullopt,
         .provenance = {
             .producer = "asset.load",
             .operation_id = "load:" + impl_->session + ":" + std::to_string(slot.generation)
@@ -335,6 +344,25 @@ RegisterBuffersResult AssetRegistry::register_buffers(
         }
     }
 
+    std::vector<geometry::PrimitiveBuffers> fingerprint_buffers;
+    fingerprint_buffers.reserve(decoded.primitives.size());
+    for (const adapters::DecodedPrimitive& primitive : decoded.primitives) {
+        fingerprint_buffers.push_back(primitive.buffers);
+    }
+    const geometry::CanonicalFingerprintResult fingerprint =
+        geometry::fingerprint_triangle_position_soup(fingerprint_buffers);
+    if (!fingerprint.success()) {
+        return {
+            .asset = std::nullopt,
+            .error = RegistryError{
+                "ASSET_FINGERPRINT_FAILED",
+                fingerprint.diagnostics.empty()
+                    ? "Canonical geometry fingerprinting failed."
+                    : fingerprint.diagnostics.front().message,
+            },
+        };
+    }
+
     const auto provenance = [&](const std::string& kind, const std::uint64_t generation,
                                 const std::uint64_t object_id) {
         return ProvenanceRecord{
@@ -351,6 +379,7 @@ RegisterBuffersResult AssetRegistry::register_buffers(
     asset.buffer_coordinate_system = std::move(decoded.coordinate_system);
     asset.buffer_unit_meters = decoded.unit_meters;
     asset.joint_names = std::move(decoded.joint_names);
+    asset.canonical_geometry_fingerprint = fingerprint.fingerprint;
     asset.primitives.reserve(decoded.primitives.size());
     for (adapters::DecodedPrimitive& primitive : decoded.primitives) {
         std::uint64_t vertex_id{};
@@ -446,6 +475,214 @@ RegisterBuffersResult AssetRegistry::register_buffers(
         });
     }
     return {.asset = asset, .error = std::nullopt};
+}
+
+UpdateAssetProvenanceResult AssetRegistry::update_provenance(
+    const AssetHandle& owner,
+    ProvenanceRecord provenance
+) {
+    std::scoped_lock lock{impl_->mutex};
+    if (owner.identity.session != impl_->session || owner.identity.object_id == 0U
+        || owner.identity.object_id > impl_->slots.size()) {
+        return {
+            .asset = std::nullopt,
+            .error = RegistryError{
+                "INVALID_HANDLE",
+                "Asset handle is not owned by this Runtime session.",
+            },
+        };
+    }
+    auto& slot = impl_->slots[static_cast<std::size_t>(owner.identity.object_id - 1U)];
+    if (slot.generation != owner.identity.generation || !slot.resource.has_value()) {
+        return {
+            .asset = std::nullopt,
+            .error = RegistryError{
+                "STALE_HANDLE",
+                "Asset handle is released, expired, or from an older generation.",
+            },
+        };
+    }
+    if (provenance.producer.empty() || provenance.operation_id.empty()) {
+        return {
+            .asset = std::nullopt,
+            .error = RegistryError{
+                "PROVENANCE_INVALID",
+                "Asset provenance requires a producer and operation id.",
+            },
+        };
+    }
+    slot.resource->provenance = std::move(provenance);
+    return {.asset = *slot.resource, .error = std::nullopt};
+}
+
+ResolveBuffersResult AssetRegistry::resolve_buffers(const AssetHandle& owner) const {
+    std::scoped_lock lock{impl_->mutex};
+    if (owner.identity.session != impl_->session || owner.identity.object_id == 0U
+        || owner.identity.object_id > impl_->slots.size()) {
+        return {.error = RegistryError{"INVALID_HANDLE", "Asset handle is not owned by this Runtime session."}};
+    }
+    const auto& slot = impl_->slots[static_cast<std::size_t>(owner.identity.object_id - 1U)];
+    if (slot.generation != owner.identity.generation || !slot.resource) {
+        return {.error = RegistryError{"STALE_HANDLE", "Asset handle is released, expired, or from an older generation."}};
+    }
+    const AssetResource& asset = *slot.resource;
+    adapters::DecodedAssetBuffers decoded{
+        .adapter = asset.adapter,
+        .coordinate_system = asset.buffer_coordinate_system,
+        .unit_meters = asset.buffer_unit_meters,
+        .joint_names = asset.joint_names,
+    };
+    decoded.primitives.reserve(asset.primitives.size());
+    for (const PrimitiveResourceSet& primitive : asset.primitives) {
+        const auto& vertex_slot = impl_->vertex_slots.at(
+            static_cast<std::size_t>(primitive.positions.handle.identity.object_id - 1U));
+        if (vertex_slot.generation != primitive.positions.handle.identity.generation
+            || !vertex_slot.resource) {
+            return {.error = RegistryError{"STALE_CHILD_HANDLE", "Asset POSITION resource is stale."}};
+        }
+        geometry::PrimitiveBuffers buffers{.positions = vertex_slot.resource->buffer};
+        if (primitive.indices) {
+            const auto& index_slot = impl_->index_slots.at(
+                static_cast<std::size_t>(primitive.indices->handle.identity.object_id - 1U));
+            if (index_slot.generation != primitive.indices->handle.identity.generation
+                || !index_slot.resource) {
+                return {.error = RegistryError{"STALE_CHILD_HANDLE", "Asset index resource is stale."}};
+            }
+            buffers.indices = index_slot.resource->buffer;
+        }
+        buffers.max_influences = primitive.max_influences;
+        buffers.influence_sets.reserve(primitive.influence_sets.size());
+        for (const SkinWeightBufferDescriptor& descriptor : primitive.influence_sets) {
+            const auto& skin_slot = impl_->skin_slots.at(
+                static_cast<std::size_t>(descriptor.handle.identity.object_id - 1U));
+            if (skin_slot.generation != descriptor.handle.identity.generation
+                || !skin_slot.resource) {
+                return {.error = RegistryError{"STALE_CHILD_HANDLE", "Asset skin resource is stale."}};
+            }
+            buffers.influence_sets.push_back(skin_slot.resource->buffers);
+        }
+        decoded.primitives.push_back(adapters::DecodedPrimitive{
+            .name = primitive.name,
+            .source_mesh_index = primitive.source_mesh_index,
+            .source_primitive_index = primitive.source_primitive_index,
+            .domain = primitive.domain,
+            .local_to_world = primitive.local_to_world,
+            .buffers = std::move(buffers),
+        });
+    }
+    return {.buffers = std::move(decoded)};
+}
+
+RegisterBuffersResult AssetRegistry::register_transferred_skin(
+    const AssetHandle& target,
+    const AssetHandle& source,
+    std::vector<std::string> joint_names,
+    std::vector<geometry::TransferredPrimitiveSkin> primitives,
+    const bool replace_existing
+) {
+    std::scoped_lock lock{impl_->mutex};
+    const auto resolve_asset = [&](const AssetHandle& handle) -> AssetResource* {
+        if (handle.identity.session != impl_->session || handle.identity.object_id == 0U
+            || handle.identity.object_id > impl_->slots.size()) return nullptr;
+        auto& slot = impl_->slots[static_cast<std::size_t>(handle.identity.object_id - 1U)];
+        return slot.generation == handle.identity.generation && slot.resource
+            ? &*slot.resource : nullptr;
+    };
+    AssetResource* target_asset = resolve_asset(target);
+    AssetResource* source_asset = resolve_asset(source);
+    if (!target_asset || !source_asset) {
+        return {.error = RegistryError{"STALE_HANDLE", "Source or target asset handle is stale."}};
+    }
+    if (primitives.size() != target_asset->primitives.size()) {
+        return {.error = RegistryError{"SKIN_PRIMITIVE_COUNT", "Transferred skin primitive count must match the target asset."}};
+    }
+    if (joint_names.empty()) {
+        return {.error = RegistryError{"SKIN_JOINTS_EMPTY", "Transferred skin requires the donor joint table."}};
+    }
+    for (const PrimitiveResourceSet& primitive : target_asset->primitives) {
+        if (!replace_existing && !primitive.influence_sets.empty()) {
+            return {.error = RegistryError{"TARGET_ALREADY_SKINNED", "Target already owns skin influence resources."}};
+        }
+        for (const SkinWeightBufferDescriptor& descriptor : primitive.influence_sets) {
+            if (descriptor.handle.identity.object_id == 0U
+                || descriptor.handle.identity.object_id > impl_->skin_slots.size()) {
+                return {.error = RegistryError{"STALE_CHILD_HANDLE", "Existing target skin resource is invalid."}};
+            }
+            const auto& slot = impl_->skin_slots[
+                static_cast<std::size_t>(descriptor.handle.identity.object_id - 1U)
+            ];
+            if (slot.generation != descriptor.handle.identity.generation || !slot.resource) {
+                return {.error = RegistryError{"STALE_CHILD_HANDLE", "Existing target skin resource is stale."}};
+            }
+        }
+    }
+    for (std::size_t primitive_index = 0U; primitive_index < primitives.size(); ++primitive_index) {
+        const auto& transferred = primitives[primitive_index];
+        const auto vertex_count = target_asset->primitives[primitive_index].positions.element_count;
+        if (transferred.vertex_count != vertex_count) {
+            return {.error = RegistryError{"SKIN_VERTEX_COUNT", "Transferred skin vertex count must match target POSITION count."}};
+        }
+        geometry::PrimitiveBuffers validation_buffers{
+            .positions = impl_->vertex_slots[
+                static_cast<std::size_t>(target_asset->primitives[primitive_index].positions.handle.identity.object_id - 1U)
+            ].resource->buffer,
+            .influence_sets = transferred.influence_sets,
+            .max_influences = transferred.max_influences,
+        };
+        if (!geometry::validate_primitive_buffers(validation_buffers).valid()) {
+            return {.error = RegistryError{"SKIN_BUFFERS_INVALID", "Transferred influence buffers failed the canonical buffer contract."}};
+        }
+    }
+    if (replace_existing) {
+        for (PrimitiveResourceSet& primitive : target_asset->primitives) {
+            for (const SkinWeightBufferDescriptor& descriptor : primitive.influence_sets) {
+                auto& slot = impl_->skin_slots[
+                    static_cast<std::size_t>(descriptor.handle.identity.object_id - 1U)
+                ];
+                slot.resource.reset();
+                ++slot.generation;
+                impl_->free_skin_ids.push_back(descriptor.handle.identity.object_id);
+            }
+            primitive.influence_sets.clear();
+            primitive.max_influences = 0U;
+        }
+    }
+    target_asset->joint_names = std::move(joint_names);
+    for (std::size_t primitive_index = 0U; primitive_index < primitives.size(); ++primitive_index) {
+        auto& target_primitive = target_asset->primitives[primitive_index];
+        auto& transferred = primitives[primitive_index];
+        target_primitive.max_influences = transferred.max_influences;
+        for (std::size_t set = 0U; set < transferred.influence_sets.size(); ++set) {
+            std::uint64_t skin_id{};
+            if (impl_->free_skin_ids.empty()) {
+                impl_->skin_slots.emplace_back();
+                skin_id = impl_->skin_slots.size();
+            } else {
+                skin_id = impl_->free_skin_ids.back();
+                impl_->free_skin_ids.pop_back();
+            }
+            auto& skin_slot = impl_->skin_slots[static_cast<std::size_t>(skin_id - 1U)];
+            const SkinWeightBufferHandle handle{{impl_->session, skin_slot.generation, skin_id}};
+            const auto& buffers = transferred.influence_sets[set];
+            const ProvenanceRecord provenance{
+                .producer = "skin.transfer",
+                .operation_id = "skin-transfer:" + impl_->session + ":"
+                    + std::to_string(skin_slot.generation) + ":" + std::to_string(skin_id),
+                .source_uri = target_asset->provenance.source_uri,
+                .source_revision = target_asset->provenance.source_revision,
+                .parents = {source, target_primitive.positions.handle},
+            };
+            target_primitive.influence_sets.push_back(SkinWeightBufferDescriptor{
+                .handle = handle,
+                .influence_set = static_cast<std::uint32_t>(set),
+                .vertex_count = transferred.vertex_count,
+                .byte_length = buffers.joints.view.storage->size() + buffers.weights.view.storage->size(),
+                .provenance = provenance,
+            });
+            skin_slot.resource = Impl::SkinResource{.handle = handle, .buffers = std::move(transferred.influence_sets[set])};
+        }
+    }
+    return {.asset = *target_asset};
 }
 
 ReleaseAssetResult AssetRegistry::release(const AssetHandle& handle) {

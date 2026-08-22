@@ -123,6 +123,12 @@ Operation characteristics:
 - has no ComfyUI or renderer dependency;
 - performs no asset-file, network, GPU, or geometry-buffer access.
 
+Two GLB records are supported directly. Their adapter-local topology
+signatures are comparable when the algorithm and signature domain match, and
+the interpreted report distinguishes identical topology from expected
+topology reconstruction after decimation. Optional texture-image inventories
+compare resolution classes and encoded image weight.
+
 The Python implementation remains the frontend-compatible reference while the
 production operation is ported to C++20.
 
@@ -135,6 +141,33 @@ spatial bounds. Level 7 converts the eight AABB corners through declared axes,
 handedness and `meters_per_unit`, then evaluates extent similarity, normalized
 center distance and AABB IoU. It is a conservative metadata alignment gate;
 surface correspondence still requires decoded geometry buffers.
+
+### Initial executable spatial skin transfer
+
+The first native `skin.transfer` slice now implements the prescribed
+surface-based transfer path:
+
+```text
+target render vertex
+→ closest donor triangle (BVH)
+→ barycentric coordinates
+→ interpolate all donor JOINTS_n / WEIGHTS_n sets
+→ merge identical joints
+→ threshold and deterministic pruning
+→ normalize surviving weights
+→ register target-owned Runtime resources
+```
+
+The operation works in the canonical metric world frame produced by the native
+FBX/glTF adapters and applies every primitive's `local_to_world` transform. A
+maximum metric distance rejects unsafe projections. The Python SDK exchanges
+only typed asset handles and a compact report; geometry and skin arrays remain
+inside the Runtime.
+
+This operation deliberately stops at weight-buffer production. Skeleton
+hierarchy, inverse bind matrices, animation injection and format serialization
+must be implemented and validated separately before a transferred character
+can be written as an animated GLB.
 
 The first native port is now implemented by `unified3d-operations` as
 `compare_analysis_records()`. It consumes typed `AnalysisRecord` values from
@@ -150,6 +183,7 @@ while retaining the local Python implementation as its conformance oracle.
 | FBX Geometry Rig Analyzer | Analyze FBX geometry, rig and animation | Native Autodesk helper used by the private node | Must be registered behind the Unified3D Runtime and Python/TypeScript clients |
 | GLB Geometry Rig Analyzer | Analyze GLB geometry, materials, rig and animation | glTF-Transform helper used by the private node | Must be registered behind the Unified3D Runtime and Python/TypeScript clients |
 | Unified3D Analysis Comparator | Normalize and compare analysis records | Python oracle, native `compare_analysis_records()` and Runtime RPC client | Levels 0–7 and both local transports implemented |
+| Spatial Skin Transfer | Closest-surface mapping and normalized weight interpolation | Native C++20 Core, Runtime RPC and typed Python client | Weight buffers implemented; skeleton/bind/animation serialization remains |
 | Markdown Input Preview | Render a string as Markdown | Not applicable | Presentation-only node; no business operation belongs in the SDK |
 
 The presentation-only exception is narrow: a node may remain frontend-only when its complete purpose is rendering, layout, interaction or visualization and it contains no processing decision that changes an asset or structured business result.

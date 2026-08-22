@@ -14,9 +14,11 @@ The first executable slice contains:
   four-wide `JOINTS_n` / `WEIGHTS_n` influence sets.
 
 The buffer slice validates scalar types, component counts, offsets, strides,
-storage bounds, vertex-count consistency and influence-set capacity. It is the
-data contract required before implementing spatial skin transfer; it is not yet
-an adapter decoder or a transfer algorithm.
+storage bounds, vertex-count consistency and influence-set capacity. The Core
+also implements a format-independent spatial skin transfer: metric world-space
+closest-triangle search through a BVH, robust barycentric coordinates,
+multi-set influence interpolation, deterministic pruning and normalization.
+Adapters and serialization remain outside the Core.
 
 Format-native sections are retained as opaque content-typed byte payloads. This
 preserves arbitrary nested FBX/glTF extension data without forcing a JSON value

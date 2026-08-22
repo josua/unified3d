@@ -117,6 +117,11 @@ void protocol_tests() {
         hello["result"]["capabilities"].size() >= 6U,
         "hello must advertise all initial runtime capabilities"
     );
+    expect(
+        std::ranges::find(hello["result"]["capabilities"], "skin.transfer")
+            != hello["result"]["capabilities"].end(),
+        "hello must advertise the native spatial skin transfer operation"
+    );
     expect(hello["result"]["session_id"].is_string(), "hello must expose the Runtime session");
     expect(
         hello["result"]["live_asset_count"] == 0U,
@@ -195,12 +200,104 @@ void registry_tests() {
     const auto index_handle = registered.asset->primitives[0].indices->handle;
     expect(registry.contains(vertex_handle), "registered vertex handle must resolve");
     expect(registry.contains(index_handle), "registered index handle must resolve");
+    const auto updated = registry.update_provenance(
+        first.asset->handle,
+        unified3d::runtime::ProvenanceRecord{
+            .producer = "asset.normalize_spatial",
+            .operation_id = "normalize:test-session:1:1",
+            .source_uri = path.generic_string(),
+            .source_revision = std::nullopt,
+            .parents = {first.asset->handle},
+        }
+    );
+    expect(updated.success(), "asset provenance must be updatable by a Runtime operation");
+    expect(
+        updated.asset->provenance.producer == "asset.normalize_spatial",
+        "updated asset provenance must name the producing operation"
+    );
+    expect(
+        registry.find(first.asset->handle)->provenance.parents.size() == 1U,
+        "updated asset provenance must retain its source parent"
+    );
 
     const auto alternate = registry.load(path, "alternate-adapter");
     expect(alternate.success() && !alternate.reused, "a distinct backend must own a distinct asset resource");
     expect(alternate.asset->handle != first.asset->handle, "backend variants must not alias handles");
     expect(registry.live_asset_count() == 2U, "both backend variants must coexist in one Runtime");
+    unified3d::adapters::DecodedAssetBuffers target_decoded{
+        .adapter = "target-adapter",
+        .primitives = {
+            {
+                .name = "target-triangle",
+                .domain = unified3d::adapters::GeometryDomain::render_vertices,
+                .buffers = {
+                    .positions = {
+                        .semantic = unified3d::geometry::VertexSemantic::position,
+                        .view = {
+                            .storage = position_storage,
+                            .element_count = 3U,
+                            .component_count = 3U,
+                            .scalar_type = unified3d::geometry::ScalarType::float32,
+                        },
+                    },
+                    .indices = unified3d::geometry::IndexBuffer{{
+                        .storage = index_storage,
+                        .element_count = 3U,
+                        .component_count = 1U,
+                        .scalar_type = unified3d::geometry::ScalarType::uint32,
+                    }},
+                },
+            },
+        },
+    };
+    const auto target_registered = registry.register_buffers(
+        alternate.asset->handle,
+        std::move(target_decoded)
+    );
+    expect(target_registered.success(), "target geometry buffers must register before transferred skin");
+    unified3d::geometry::TransferredPrimitiveSkin transferred{
+        .influence_sets = {{
+            .joints = {
+                .semantic = unified3d::geometry::VertexSemantic::joints,
+                .view = {
+                    .storage = std::make_shared<std::vector<std::byte>>(48U),
+                    .element_count = 3U,
+                    .component_count = 4U,
+                    .scalar_type = unified3d::geometry::ScalarType::uint32,
+                },
+            },
+            .weights = {
+                .semantic = unified3d::geometry::VertexSemantic::weights,
+                .view = {
+                    .storage = std::make_shared<std::vector<std::byte>>(48U),
+                    .element_count = 3U,
+                    .component_count = 4U,
+                    .scalar_type = unified3d::geometry::ScalarType::float32,
+                },
+            },
+        }},
+        .max_influences = 1U,
+        .vertex_count = 3U,
+    };
+    const auto skin_registered = registry.register_transferred_skin(
+        alternate.asset->handle,
+        first.asset->handle,
+        {"joint0"},
+        {std::move(transferred)}
+    );
+    expect(skin_registered.success(), "transferred weights must become Runtime-owned resources");
+    const auto transferred_handle = skin_registered.asset->primitives[0].influence_sets[0].handle;
+    expect(registry.contains(transferred_handle), "transferred skin handle must resolve while its target is live");
+    expect(
+        skin_registered.asset->primitives[0].influence_sets[0].provenance.producer == "skin.transfer",
+        "transferred skin provenance must name the producing operation"
+    );
+    expect(
+        skin_registered.asset->primitives[0].influence_sets[0].provenance.parents.size() == 2U,
+        "transferred skin provenance must retain donor and target-buffer parents"
+    );
     expect(registry.release(alternate.asset->handle).released, "alternate backend resource must release independently");
+    expect(!registry.contains(transferred_handle), "releasing the target must invalidate transferred skin resources");
 
     const auto second = registry.load(path);
     expect(second.success() && second.reused, "unchanged source must reuse its live handle");
@@ -246,6 +343,15 @@ void asset_rpc_tests() {
     expect(asset["primitives"].size() == 1U, "asset RPC must expose one primitive resource set");
     expect(asset["primitives"][0]["positions"]["element_count"] == 3U, "position descriptor must preserve vertex count");
     expect(asset["primitives"][0]["indices"]["element_count"] == 3U, "index descriptor must preserve index count");
+    expect(
+        asset["canonical_geometry_fingerprint"]["algorithm"]
+            == "triangle-position-soup-fnv1a64-v1",
+        "asset RPC must expose the canonical geometry fingerprint"
+    );
+    expect(
+        asset["canonical_geometry_fingerprint"]["triangle_count"] == 1U,
+        "canonical geometry fingerprint must preserve triangle count"
+    );
 
     const Json second = call(
         runtime,
